@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import time
 import os
 import sys
@@ -268,10 +270,10 @@ def main(connection, firmware, address, enter_terminal=True):
         def print_progress(sent_packets, success_count, error_count):
             sent_bytes = sent_packets * packet_size
             total_bytes = firmware_stat.st_size
-            sys.stdout.write('{sent:d}/{total:d} bytes [{progress}] (Error {retry_count}/{retries})'.format(
+            sys.stdout.write('{sent:d}/{total:d} bytes [{progress}] (Error {retry_count}/{retries})\r'.format(
                 sent=sent_bytes,
                 total=total_bytes,
-                progress=('#' * (int(float(sent_bytes) / total_bytes) * 100)).rjust(100, ' '),
+                progress=('#' * (int((float(sent_bytes) / total_bytes) * 100))).ljust(100, ' '),
                 retry_count=error_count,
                 retries=retries
             ))
@@ -297,6 +299,9 @@ def main(connection, firmware, address, enter_terminal=True):
             pass
 
         terminal.join()
+
+    sys.stdout.write('\nThis session has been saved to {}\n'.format(connection.session_log_file.name))
+
 
 
 if __name__ == '__main__':

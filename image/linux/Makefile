@@ -21,4 +21,7 @@ $(kernel_dir)/vmlinux: $(kernel_dir)/initramdisk/init
 	cp $(config_file) $(kernel_dir)/.config
 	make ARCH=mips CROSS_COMPILE=$(target)- -C $(kernel_dir)
 
-build: $(kernel_dir)/vmlinux
+$(KDIR)/vmlinux: $(kernel_dir)/vmlinux
+	cp $< $@
+
+build: $(KDIR)/vmlinux

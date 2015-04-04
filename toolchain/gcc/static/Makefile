@@ -16,6 +16,8 @@ $(build)/gcc-static-build/: $(build)/gcc-4.9.2/
 	mkdir $@
 	cd $@; $</configure $(static_gcc_configure_options)
 
-build: $(build)/gcc-static-build/
+$(toolchain)/lib/gcc/$(target)/4.9.2/libgcc.a: $(build)/gcc-static-build/
 	$(MAKE) -C $< all-gcc all-target-libgcc
 	$(MAKE) -C $< install-gcc install-target-libgcc
+
+build: $(toolchain)/lib/gcc/$(target)/4.9.2/libgcc.a

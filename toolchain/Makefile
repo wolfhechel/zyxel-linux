@@ -1,10 +1,10 @@
 include $(INCLUDEDIR)/common.mk
 
-SUBDIRS = binutils \
-		  gcc/static \
-		  linux-headers \
-		  musl \
-		  gcc
+SUBDIRS = 	binutils \
+		gcc/static \
+		linux-headers \
+		musl \
+		gcc
 
 all: $(sysroot) $(SUBDIRS)
 

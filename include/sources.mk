@@ -3,7 +3,7 @@ $($(shell echo "$(1)" | sed "s/^.*\/\(.*\)-.*$$/\1/g")_src)
 endef
 
 $(src)/%: $(src)
-	@(cd $(dir $@); curl -O $(call src_url,$@))
+	@(cd $(dir $@); curl -LO $(call src_url,$@))
 
 $(build)/%/: $(src)/%.tar.*
 	@-mkdir $(build)

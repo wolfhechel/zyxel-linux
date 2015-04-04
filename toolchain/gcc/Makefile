@@ -9,6 +9,8 @@ $(build)/gcc-build/: $(build)/gcc-4.9.2/
 	mkdir $@
 	cd $@; $</configure $(gcc_configure_options)
 
-build: $(build)/gcc-build/
+$(toolchain)/bin/$(target)-gcc: $(build)/gcc-build/
 	$(MAKE) -C $< all
 	$(MAKE) -C $< install
+
+build: $(toolchain)/bin/$(target)-gcc

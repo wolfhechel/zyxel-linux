@@ -11,9 +11,11 @@ binutils_configure_options = $(sysroot_options) \
 			         		 --disable-libssp
 
 $(build)/binutils-build/: $(build)/binutils-2.25/
-	mkdir $@
+	@-mkdir $@
 	cd $@; $</configure $(binutils_configure_options)
 
-build: $(build)/binutils-build/
+$(sysroot)/bin/ar: $(build)/binutils-build/
 	$(MAKE) -C $< all
 	$(MAKE) -C $< install
+
+build: $(sysroot)/bin/ar

@@ -7,8 +7,10 @@ musl_CC = $(target)-gcc
 musl_configure_options = --prefix=/ \
                          --target=$(target)
 
-build: $(build)/musl-1.0.4/
+$(sysroot)/lib/libc.a: $(build)/musl-1.0.4/
 	cd $<; CFLAGS="$(musl_CFLAGS)" CC=$(musl_CC) ./configure $(musl_configure_options)
 
 	$(MAKE) CC=$(musl_CC) CROSS_COMPILE=$(target)- -C $< all
 	DESTDIR=$(sysroot) $(MAKE) -C $< install
+
+build: $(sysroot)/lib/libc.a
