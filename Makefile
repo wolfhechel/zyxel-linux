@@ -1,5 +1,5 @@
 export ROOTDIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-export INCLUDEDIR = $(ROOTDIR)/include
+export INCLUDEDIR = $(ROOTDIR)
 
 SUBDIRS := toolchain image
 

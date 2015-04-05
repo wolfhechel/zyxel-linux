@@ -1,2 +1,25 @@
+# Vagrant stuff
 .vagrant
+
+# IDE and texteditor settings
+**/.idea
+*.sublime-*
+
+# Python stuff
+bin
+include
+lib
+.Python
+eggs/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+*.pyc
+
+# Source archives
 src
+
+# Build artifacts
+*.bin
+last_session

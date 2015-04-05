@@ -4,7 +4,7 @@ host := $(shell echo $$MACHTYPE | sed "s/-[^-]*/-cross/")
 target := mips-linux-musl
 
 build = $(output)/build
-toolchain = $(output)/toolchain
+toolchain = $(output)
 sysroot = $(toolchain)/$(target)
 
 src := $(ROOTDIR)/src
