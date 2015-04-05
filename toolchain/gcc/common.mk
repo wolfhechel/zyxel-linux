@@ -1,4 +1,4 @@
-include $(INCLUDEDIR)/common.mk
+include $(ROOTDIR)/common.mk
 
 gcc_src := ftp://ftp.gnu.org/gnu/gcc/gcc-4.9.2/gcc-4.9.2.tar.bz2
 

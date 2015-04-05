@@ -1,4 +1,4 @@
-include $(INCLUDEDIR)/common.mk
+include $(ROOTDIR)/common.mk
 musl_src = http://www.musl-libc.org/releases/musl-1.0.4.tar.gz
 
 musl_CFLAGS := -msoft-float -Wa,-msoft-float

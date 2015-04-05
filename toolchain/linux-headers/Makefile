@@ -1,4 +1,4 @@
-include $(INCLUDEDIR)/common.mk
+include $(ROOTDIR)/common.mk
 
 linux_src = https://www.kernel.org/pub/linux/kernel/v3.x/linux-3.19.2.tar.xz
 

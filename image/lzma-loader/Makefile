@@ -1,4 +1,4 @@
-include $(INCLUDEDIR)/common.mk
+include $(ROOTDIR)/common.mk
 
 src_dir = $(abspath src)
 
@@ -10,14 +10,15 @@ $(build)/lzma-loader/vmlinux.lzma: $(build)/lzma-loader/ $(KDIR)/vmlinux
 
 $(build)/lzma-loader/lzma.bin: $(build)/lzma-loader/vmlinux.lzma
 	$(MAKE) -C $(dir $@) CC="$(target)-gcc" \
-				CFLAGS="-msoft-floats -Wa,-msoft-floats" \
 			  	CROSS_COMPILE="$(target)-" \
 			  	LOADADDR=$(LOADADDR) \
 			  	KERNEL_ENTRY=$(KERNEL_ENTRY) \
 			  	RAMSTART=$(RAMSTART) \
 			  	RAMSIZE=$(RAMSIZE)
 
-$(output)/lzma.bin: $(build)/lzma-loader/lzma.bin
+$(KDIR)/lzma.bin: $(build)/lzma-loader/lzma.bin
 	cp -Rv $< $@
 
-build: $(output)/lzma.bin
+build: $(KDIR)/lzma.bin
+
+.INTERMEDIATE: $(src_dir)/

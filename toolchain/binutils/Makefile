@@ -1,4 +1,4 @@
-include $(INCLUDEDIR)/common.mk
+include $(ROOTDIR)/common.mk
 
 binutils_src = http://ftp.gnu.org/gnu/binutils/binutils-2.25.tar.bz2
 

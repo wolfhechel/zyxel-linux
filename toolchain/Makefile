@@ -1,4 +1,4 @@
-include $(INCLUDEDIR)/common.mk
+include $(ROOTDIR)/common.mk
 
 SUBDIRS = 	binutils \
 		gcc/static \

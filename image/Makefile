@@ -1,8 +1,8 @@
-include $(INCLUDEDIR)/common.mk
+include $(ROOTDIR)/common.mk
 
-export LOADADDR     := 0x94600000
-export KERNEL_ENTRY := 0x94100000
-export RAMSTART     := 0x94000000
+export LOADADDR     := 0x94020000
+export KERNEL_ENTRY := $(LOADADDR) # 0x9419f560
+export RAMSTART     := 0x94008000
 export RAMSIZE      := 0x00100000
 
 export KDIR = $(output)/kernel

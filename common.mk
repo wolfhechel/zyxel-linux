@@ -1,4 +1,4 @@
-include $(INCLUDEDIR)/config.mk
+include $(ROOTDIR)/config.mk
 
 # Source retrieval
 
