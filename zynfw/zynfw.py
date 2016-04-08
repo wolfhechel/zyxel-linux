@@ -11,6 +11,8 @@ import termios
 import serial
 from serial.tools import list_ports
 import xmodem
+from progressbar import ProgressBar, ETA, Bar, FileTransferSpeed, DataSize, Percentage
+
 
 
 logging.basicConfig(level=logging.FATAL)
@@ -256,9 +258,8 @@ def main(connection, firmware, address, enter_terminal=True):
 
         def putc(data, timeout=1):
             connection.write(data)
-            time.sleep(0.001)  # Give device time to send ACK
 
-        transfer = xmodem.XMODEM(getc, putc)
+        transfer = xmodem.XMODEM(getc, putc, mode='xmodem1k')
 
         packet_size = dict(
             xmodem=128,
@@ -267,16 +268,14 @@ def main(connection, firmware, address, enter_terminal=True):
 
         retries = 16
 
+        widgets = [Percentage(), ' ',
+               Bar(marker='*', left='[', right=']'),
+               ' ', ETA(), ' ', FileTransferSpeed()]
+
+        pbar = ProgressBar(widgets=widgets, max_value=firmware_stat.st_size)
+
         def print_progress(sent_packets, success_count, error_count):
-            sent_bytes = sent_packets * packet_size
-            total_bytes = firmware_stat.st_size
-            sys.stdout.write('{sent:d}/{total:d} bytes [{progress}] (Error {retry_count}/{retries})\r'.format(
-                sent=sent_bytes,
-                total=total_bytes,
-                progress=('#' * (int((float(sent_bytes) / total_bytes) * 100))).ljust(100, ' '),
-                retry_count=error_count,
-                retries=retries
-            ))
+            pbar.update(min(sent_packets * packet_size, pbar.max_value))
 
         transfer.send(firmware, retry=retries, quiet=1, callback=print_progress)
 
@@ -330,7 +329,7 @@ if __name__ == '__main__':
 
         return ZyxelSerial(value, 9600, timeout=1)
 
-    argument_parser.add_argument('-l', '--load-address', default=0x94020000, type=int,
+    argument_parser.add_argument('-l', '--load-address', default=0x94100000, type=lambda x: int(x, 16),
                                  help='Upload firmware to memory address')
     argument_parser.add_argument('-s', '--serial', type=serial_interface,
                                  default=default_serial_port, help='Serial port')

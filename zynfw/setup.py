@@ -1,24 +1,16 @@
 try:
-    import ez_setup
-
-    ez_setup.use_setuptools()
+    from setuptools import setup
 except ImportError:
-    pass
-
-from setuptools import setup, find_packages
+    from distutils.core import setup
 
 setup(
     name='zynfw',
-    version='0.1',
-    packages=find_packages(),
-    license='MIT',
+    version='',
+    url='',
+    license='',
     author='Pontus Karlsson',
     author_email='jonet@okuejina.net',
-    description='Zyxel Firmware Utilities',
-    install_requires=[
-        'pyserial',
-        'xmodem'
-    ],
+    description='',
     scripts=[
         'zynfw.py'
     ]
