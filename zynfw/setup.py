@@ -10,6 +10,11 @@ setup(
     license='',
     author='Pontus Karlsson',
     author_email='jonet@okuejina.net',
+    install_requires=[
+        'pyserial<3',
+        'xmodem',
+        'progressbar2'
+    ],
     description='',
     scripts=[
         'zynfw.py'
