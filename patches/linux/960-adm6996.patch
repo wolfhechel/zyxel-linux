@@ -1,0 +1,3610 @@
+Index: linux-4.1.11/Documentation/networking/adm6996.txt
+===================================================================
+--- /dev/null
++++ linux-4.1.11/Documentation/networking/adm6996.txt
+@@ -0,0 +1,110 @@
++------- 
++
++ADM6996FC / ADM6996M switch chip driver
++
++
++1. General information
++
++  This driver supports the FC and M models only. The ADM6996F and L are
++  completely different chips.
++  
++  Support for the FC model is extremely limited at the moment. There is no VLAN
++  support as of yet. The driver will not offer an swconfig interface for the FC
++  chip.
++ 
++1.1 VLAN IDs
++
++  It is possible to define 16 different VLANs. Every VLAN has an identifier, its
++  VLAN ID. It is easiest if you use at most VLAN IDs 0-15. In that case, the
++  swconfig based configuration is very straightforward. To define two VLANs with
++  IDs 4 and 5, you can invoke, for example:
++  
++      # swconfig dev ethX vlan 4 set ports '0 1t 2 5t' 
++      # swconfig dev ethX vlan 5 set ports '0t 1t 5t'
++  
++  The swconfig framework will automatically invoke 'port Y set pvid Z' for every
++  port that is an untagged member of VLAN Y, setting its Primary VLAN ID. In
++  this example, ports 0 and 2 would get "pvid 4". The Primary VLAN ID of a port
++  is the VLAN ID associated with untagged packets coming in on that port.
++  
++  But if you wish to use VLAN IDs outside the range 0-15, this automatic
++  behaviour of the swconfig framework becomes a problem. The 16 VLANs that
++  swconfig can configure on the ADM6996 also have a "vid" setting. By default,
++  this is the same as the number of the VLAN entry, to make the simple behaviour
++  above possible. To still support a VLAN with a VLAN ID higher than 15
++  (presumably because you are in a network where such VLAN IDs are already in
++  use), you can change the "vid" setting of the VLAN to anything in the range
++  0-1023. But suppose you did the following:
++  
++      # swconfig dev ethX vlan 0 set vid 998 
++      # swconfig dev ethX vlan 0 set ports '0 2 5t'
++ 
++  Now the swconfig framework will issue 'port 0 set pvid 0' and 'port 2 set pvid
++  0'. But the "pvid" should be set to 998, so you are responsible for manually
++  fixing this!
++
++1.2 VLAN filtering
++
++  The switch is configured to apply source port filtering. This means that
++  packets are only accepted when the port the packets came in on is a member of
++  the VLAN the packet should go to.
++
++  Only membership of a VLAN is tested, it does not matter whether it is a tagged
++  or untagged membership.
++
++  For untagged packets, the destination VLAN is the Primary VLAN ID of the
++  incoming port. So if the PVID of a port is 0, but that port is not a member of
++  the VLAN with ID 0, this means that untagged packets on that port are dropped.
++  This can be used as a roundabout way of dropping untagged packets from a port,
++  a mode often referred to as "Admit only tagged packets".
++
++1.3 Reset
++
++  The two supported chip models do not have a sofware-initiated reset. When the
++  driver is initialised, as well as when the 'reset' swconfig option is invoked,
++  the driver will set those registers it knows about and supports to the correct
++  default value. But there are a lot of registers in the chip that the driver
++  does not support. If something changed those registers, invoking 'reset' or
++  performing a warm reboot might still leave the chip in a "broken" state. Only
++  a hardware reset will bring it back in the default state.
++
++2. Technical details on PHYs and the ADM6996
++
++  From the viewpoint of the Linux kernel, it is common that an Ethernet adapter
++  can be seen as a separate MAC entity and a separate PHY entity. The PHY entity
++  can be queried and set through registers accessible via an MDIO bus. A PHY
++  normally has a single address on that bus, in the range 0 through 31.
++
++  The ADM6996 has special-purpose registers in the range of PHYs 0 through 10.
++  Even though all these registers control a single ADM6996 chip, the Linux
++  kernel treats this as 11 separate PHYs.  The driver will bind to these
++  addresses to prevent a different PHY driver from binding and corrupting these
++  registers.
++
++  What Linux sees as the PHY on address 0 is meant for the Ethernet MAC
++  connected to the CPU port of the ADM6996 switch chip (port 5). This is the
++  Ethernet MAC you will use to send and receive data through the switch.
++
++  The PHYs at addresses 16 through 20 map to the PHYs on ports 0 through 4 of
++  the switch chip. These can be accessed with the Generic PHY driver, as the
++  registers have the common layout.
++
++  If a second Ethernet MAC on your board is wired to the port 4 PHY, that MAC
++  needs to bind to PHY address 20 for the port to work correctly.
++
++  The ADM6996 switch driver will reset the ports 0 through 3 on startup and when
++  'reset' is invoked. This could clash with a different PHY driver if the kernel
++  binds a PHY driver to address 16 through 19.
++
++  If Linux binds a PHY on addresses 1 through 10 to an Ethernet MAC, the ADM6996
++  driver will simply always report a connected 100 Mbit/s full-duplex link for
++  that PHY, and provide no other functionality. This is most likely not what you
++  want. So if you see a message in your log
++
++  	ethX: PHY overlaps ADM6996, providing fixed PHY yy.
++
++  This is most likely an indication that ethX will not work properly, and your
++  kernel needs to be configured to attach a different PHY to that Ethernet MAC.
++
++  Controlling the mapping between MACs and PHYs is usually done in platform- or
++  board-specific fixup code. The ADM6996 driver has no influence over this.
+Index: linux-4.1.11/drivers/net/phy/Kconfig
+===================================================================
+--- linux-4.1.11.orig/drivers/net/phy/Kconfig
++++ linux-4.1.11/drivers/net/phy/Kconfig
+@@ -12,6 +12,16 @@ menuconfig PHYLIB
+ 
+ if PHYLIB
+ 
++config SWCONFIG
++	tristate "Switch configuration API"
++	---help---
++	  Switch configuration API using netlink. This allows
++	  you to configure the VLAN features of certain switches.
++
++config SWCONFIG_LEDS
++	bool "Switch LED trigger support"
++	depends on (SWCONFIG && LEDS_TRIGGERS)
++
+ comment "MII PHY device drivers"
+ 
+ config AT803X_PHY
+@@ -119,6 +129,13 @@ config MICREL_PHY
+ 	---help---
+ 	  Supports the KSZ9021, VSC8201, KS8001 PHYs.
+ 
++config ADM6996_PHY
++	tristate "Driver for ADM6996 switches"
++	select SWCONFIG
++	---help---
++	  Currently supports the ADM6996FC and ADM6996M switches.
++	  Support for FC is very limited.
++
+ config FIXED_PHY
+ 	tristate "Driver for MDIO Bus/PHY emulation with fixed speed/link PHYs"
+ 	depends on PHYLIB
+Index: linux-4.1.11/drivers/net/phy/Makefile
+===================================================================
+--- linux-4.1.11.orig/drivers/net/phy/Makefile
++++ linux-4.1.11/drivers/net/phy/Makefile
+@@ -3,6 +3,7 @@
+ libphy-objs			:= phy.o phy_device.o mdio_bus.o
+ 
+ obj-$(CONFIG_PHYLIB)		+= libphy.o
++obj-$(CONFIG_SWCONFIG)		+= swconfig.o
+ obj-$(CONFIG_MARVELL_PHY)	+= marvell.o
+ obj-$(CONFIG_DAVICOM_PHY)	+= davicom.o
+ obj-$(CONFIG_CICADA_PHY)	+= cicada.o
+@@ -15,6 +16,7 @@ obj-$(CONFIG_BCM63XX_PHY)	+= bcm63xx.o
+ obj-$(CONFIG_BCM7XXX_PHY)	+= bcm7xxx.o
+ obj-$(CONFIG_BCM87XX_PHY)	+= bcm87xx.o
+ obj-$(CONFIG_ICPLUS_PHY)	+= icplus.o
++obj-$(CONFIG_ADM6996_PHY)	+= adm6996.o
+ obj-$(CONFIG_REALTEK_PHY)	+= realtek.o
+ obj-$(CONFIG_LSI_ET1011C_PHY)	+= et1011c.o
+ obj-$(CONFIG_FIXED_PHY)		+= fixed_phy.o
+Index: linux-4.1.11/drivers/net/phy/adm6996.c
+===================================================================
+--- /dev/null
++++ linux-4.1.11/drivers/net/phy/adm6996.c
+@@ -0,0 +1,1210 @@
++/*
++ * ADM6996 switch driver
++ *
++ * swconfig interface based on ar8216.c
++ *
++ * Copyright (c) 2008 Felix Fietkau <nbd@nbd.name>
++ * VLAN support Copyright (c) 2010, 2011 Peter Lebbing <peter@digitalbrains.com>
++ * Copyright (c) 2013 Hauke Mehrtens <hauke@hauke-m.de>
++ * Copyright (c) 2014 Matti Laakso <malaakso@elisanet.fi>
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of the GNU General Public License v2 as published by the
++ * Free Software Foundation
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++/*#define DEBUG 1*/
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/errno.h>
++#include <linux/unistd.h>
++#include <linux/slab.h>
++#include <linux/interrupt.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++#include <linux/gpio.h>
++#include <linux/netdevice.h>
++#include <linux/etherdevice.h>
++#include <linux/skbuff.h>
++#include <linux/spinlock.h>
++#include <linux/mm.h>
++#include <linux/module.h>
++#include <linux/mii.h>
++#include <linux/platform_device.h>
++#include <linux/platform_data/adm6996-gpio.h>
++#include <linux/ethtool.h>
++#include <linux/phy.h>
++#include <linux/switch.h>
++
++#include <asm/io.h>
++#include <asm/irq.h>
++#include <asm/uaccess.h>
++#include "adm6996.h"
++
++MODULE_DESCRIPTION("Infineon ADM6996 Switch");
++MODULE_AUTHOR("Felix Fietkau, Peter Lebbing <peter@digitalbrains.com>");
++MODULE_LICENSE("GPL");
++
++static const char * const adm6996_model_name[] =
++{
++	NULL,
++	"ADM6996FC",
++	"ADM6996M",
++	"ADM6996L"
++};
++
++struct adm6996_mib_desc {
++	unsigned int offset;
++	const char *name;
++};
++
++struct adm6996_priv {
++	struct switch_dev dev;
++	void *priv;
++
++	u8 eecs;
++	u8 eesk;
++	u8 eedi;
++	u8 eerc;
++
++	enum adm6996_model model;
++
++	bool enable_vlan;
++	bool vlan_enabled;	/* Current hardware state */
++
++#ifdef DEBUG
++	u16 addr;		/* Debugging: register address to operate on */
++#endif
++
++	u16 pvid[ADM_NUM_PORTS];	/* Primary VLAN ID */
++	u8 tagged_ports;
++
++	u16 vlan_id[ADM_NUM_VLANS];
++	u8 vlan_table[ADM_NUM_VLANS];	/* bitmap, 1 = port is member */
++	u8 vlan_tagged[ADM_NUM_VLANS];	/* bitmap, 1 = tagged member */
++	
++	struct mutex mib_lock;
++	char buf[2048];
++
++	struct mutex reg_mutex;
++
++	/* use abstraction for regops, we want to add gpio support in the future */
++	u16 (*read)(struct adm6996_priv *priv, enum admreg reg);
++	void (*write)(struct adm6996_priv *priv, enum admreg reg, u16 val);
++};
++
++#define to_adm(_dev) container_of(_dev, struct adm6996_priv, dev)
++#define phy_to_adm(_phy) ((struct adm6996_priv *) (_phy)->priv)
++
++#define MIB_DESC(_o, _n)	\
++	{			\
++		.offset = (_o),	\
++		.name = (_n),	\
++	}
++
++static const struct adm6996_mib_desc adm6996_mibs[] = {
++	MIB_DESC(ADM_CL0, "RxPacket"),
++	MIB_DESC(ADM_CL6, "RxByte"),
++	MIB_DESC(ADM_CL12, "TxPacket"),
++	MIB_DESC(ADM_CL18, "TxByte"),
++	MIB_DESC(ADM_CL24, "Collision"),
++	MIB_DESC(ADM_CL30, "Error"),
++};
++
++static inline u16
++r16(struct adm6996_priv *priv, enum admreg reg)
++{
++	return priv->read(priv, reg);
++}
++
++static inline void
++w16(struct adm6996_priv *priv, enum admreg reg, u16 val)
++{
++	priv->write(priv, reg, val);
++}
++
++/* Minimum timing constants */
++#define EECK_EDGE_TIME  3   /* 3us - max(adm 2.5us, 93c 1us) */
++#define EEDI_SETUP_TIME 1   /* 1us - max(adm 10ns, 93c 400ns) */
++#define EECS_SETUP_TIME 1   /* 1us - max(adm no, 93c 200ns) */
++
++static void adm6996_gpio_write(struct adm6996_priv *priv, int cs, char *buf, unsigned int bits)
++{
++	int i, len = (bits + 7) / 8;
++	u8 mask;
++
++	gpio_set_value(priv->eecs, cs);
++	udelay(EECK_EDGE_TIME);
++
++	/* Byte assemble from MSB to LSB */
++	for (i = 0; i < len; i++) {
++		/* Bit bang from MSB to LSB */
++		for (mask = 0x80; mask && bits > 0; mask >>= 1, bits --) {
++			/* Clock low */
++			gpio_set_value(priv->eesk, 0);
++			udelay(EECK_EDGE_TIME);
++
++			/* Output on rising edge */
++			gpio_set_value(priv->eedi, (mask & buf[i]));
++			udelay(EEDI_SETUP_TIME);
++
++			/* Clock high */
++			gpio_set_value(priv->eesk, 1);
++			udelay(EECK_EDGE_TIME);
++		}
++	}
++
++	/* Clock low */
++	gpio_set_value(priv->eesk, 0);
++	udelay(EECK_EDGE_TIME);
++
++	if (cs)
++		gpio_set_value(priv->eecs, 0);
++}
++
++static void adm6996_gpio_read(struct adm6996_priv *priv, int cs, char *buf, unsigned int bits)
++{
++	int i, len = (bits + 7) / 8;
++	u8 mask;
++
++	gpio_set_value(priv->eecs, cs);
++	udelay(EECK_EDGE_TIME);
++
++	/* Byte assemble from MSB to LSB */
++	for (i = 0; i < len; i++) {
++		u8 byte;
++
++		/* Bit bang from MSB to LSB */
++		for (mask = 0x80, byte = 0; mask && bits > 0; mask >>= 1, bits --) {
++			u8 gp;
++
++			/* Clock low */
++			gpio_set_value(priv->eesk, 0);
++			udelay(EECK_EDGE_TIME);
++
++			/* Input on rising edge */
++			gp = gpio_get_value(priv->eedi);
++			if (gp)
++				byte |= mask;
++
++			/* Clock high */
++			gpio_set_value(priv->eesk, 1);
++			udelay(EECK_EDGE_TIME);
++		}
++
++		*buf++ = byte;
++	}
++
++	/* Clock low */
++	gpio_set_value(priv->eesk, 0);
++	udelay(EECK_EDGE_TIME);
++
++	if (cs)
++		gpio_set_value(priv->eecs, 0);
++}
++
++/* Advance clock(s) */
++static void adm6996_gpio_adclk(struct adm6996_priv *priv, int clocks)
++{
++	int i;
++	for (i = 0; i < clocks; i++) {
++		/* Clock high */
++		gpio_set_value(priv->eesk, 1);
++		udelay(EECK_EDGE_TIME);
++
++		/* Clock low */
++		gpio_set_value(priv->eesk, 0);
++		udelay(EECK_EDGE_TIME);
++	}
++}
++
++static u16
++adm6996_read_gpio_reg(struct adm6996_priv *priv, enum admreg reg)
++{
++	/* cmd: 01 10 T DD R RRRRRR */
++	u8 bits[6] = {
++		0xFF, 0xFF, 0xFF, 0xFF,
++		(0x06 << 4) | ((0 & 0x01) << 3 | (reg&64)>>6),
++		((reg&63)<<2)
++	};
++
++	u8 rbits[4];
++
++	/* Enable GPIO outputs with all pins to 0 */
++	gpio_direction_output(priv->eecs, 0);
++	gpio_direction_output(priv->eesk, 0);
++	gpio_direction_output(priv->eedi, 0);
++
++	adm6996_gpio_write(priv, 0, bits, 46);
++	gpio_direction_input(priv->eedi);
++	adm6996_gpio_adclk(priv, 2);
++	adm6996_gpio_read(priv, 0, rbits, 32);
++
++	/* Extra clock(s) required per datasheet */
++	adm6996_gpio_adclk(priv, 2);
++
++	/* Disable GPIO outputs */
++	gpio_direction_input(priv->eecs);
++	gpio_direction_input(priv->eesk);
++
++	 /* EEPROM has 16-bit registers, but pumps out two registers in one request */
++	return (reg & 0x01 ?  (rbits[0]<<8) | rbits[1] : (rbits[2]<<8) | (rbits[3]));
++}
++
++/* Write chip configuration register */
++/* Follow 93c66 timing and chip's min EEPROM timing requirement */
++static void
++adm6996_write_gpio_reg(struct adm6996_priv *priv, enum admreg reg, u16 val)
++{
++	/* cmd(27bits): sb(1) + opc(01) + addr(bbbbbbbb) + data(bbbbbbbbbbbbbbbb) */
++	u8 bits[4] = {
++		(0x05 << 5) | (reg >> 3),
++		(reg << 5) | (u8)(val >> 11),
++		(u8)(val >> 3),
++		(u8)(val << 5)
++	};
++
++	/* Enable GPIO outputs with all pins to 0 */
++	gpio_direction_output(priv->eecs, 0);
++	gpio_direction_output(priv->eesk, 0);
++	gpio_direction_output(priv->eedi, 0);
++
++	/* Write cmd. Total 27 bits */
++	adm6996_gpio_write(priv, 1, bits, 27);
++
++	/* Extra clock(s) required per datasheet */
++	adm6996_gpio_adclk(priv, 2);
++
++	/* Disable GPIO outputs */
++	gpio_direction_input(priv->eecs);
++	gpio_direction_input(priv->eesk);
++	gpio_direction_input(priv->eedi);
++}
++
++static u16
++adm6996_read_mii_reg(struct adm6996_priv *priv, enum admreg reg)
++{
++	struct phy_device *phydev = priv->priv;
++	struct mii_bus *bus = phydev->bus;
++
++	return bus->read(bus, PHYADDR(reg));
++}
++
++static void
++adm6996_write_mii_reg(struct adm6996_priv *priv, enum admreg reg, u16 val)
++{
++	struct phy_device *phydev = priv->priv;
++	struct mii_bus *bus = phydev->bus;
++
++	bus->write(bus, PHYADDR(reg), val);
++}
++
++static int
++adm6996_set_enable_vlan(struct switch_dev *dev, const struct switch_attr *attr,
++			struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	if (val->value.i > 1)
++		return -EINVAL;
++
++	priv->enable_vlan = val->value.i;
++
++	return 0;
++};
++
++static int
++adm6996_get_enable_vlan(struct switch_dev *dev, const struct switch_attr *attr,
++			struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	val->value.i = priv->enable_vlan;
++
++	return 0;
++};
++
++#ifdef DEBUG
++
++static int
++adm6996_set_addr(struct switch_dev *dev, const struct switch_attr *attr,
++		 struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	if (val->value.i > 1023)
++		return -EINVAL;
++
++	priv->addr = val->value.i;
++
++	return 0;
++};
++
++static int
++adm6996_get_addr(struct switch_dev *dev, const struct switch_attr *attr,
++		 struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	val->value.i = priv->addr;
++
++	return 0;
++};
++
++static int
++adm6996_set_data(struct switch_dev *dev, const struct switch_attr *attr,
++		 struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	if (val->value.i > 65535)
++		return -EINVAL;
++
++	w16(priv, priv->addr, val->value.i);
++
++	return 0;
++};
++
++static int
++adm6996_get_data(struct switch_dev *dev, const struct switch_attr *attr,
++		 struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	val->value.i = r16(priv, priv->addr);
++
++	return 0;
++};
++
++#endif /* def DEBUG */
++
++static int
++adm6996_set_pvid(struct switch_dev *dev, int port, int vlan)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	pr_devel("set_pvid port %d vlan %d\n", port, vlan);
++
++	if (vlan > ADM_VLAN_MAX_ID)
++		return -EINVAL;
++
++	priv->pvid[port] = vlan;
++
++	return 0;
++}
++
++static int
++adm6996_get_pvid(struct switch_dev *dev, int port, int *vlan)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	pr_devel("get_pvid port %d\n", port);
++	*vlan = priv->pvid[port];
++
++	return 0;
++}
++
++static int
++adm6996_set_vid(struct switch_dev *dev, const struct switch_attr *attr,
++		struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	pr_devel("set_vid port %d vid %d\n", val->port_vlan, val->value.i);
++
++	if (val->value.i > ADM_VLAN_MAX_ID)
++		return -EINVAL;
++
++	priv->vlan_id[val->port_vlan] = val->value.i;
++
++	return 0;
++};
++
++static int
++adm6996_get_vid(struct switch_dev *dev, const struct switch_attr *attr,
++		struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	pr_devel("get_vid port %d\n", val->port_vlan);
++
++	val->value.i = priv->vlan_id[val->port_vlan];
++
++	return 0;
++};
++
++static int
++adm6996_get_ports(struct switch_dev *dev, struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++	u8 ports = priv->vlan_table[val->port_vlan];
++	u8 tagged = priv->vlan_tagged[val->port_vlan];
++	int i;
++
++	pr_devel("get_ports port_vlan %d\n", val->port_vlan);
++
++	val->len = 0;
++
++	for (i = 0; i < ADM_NUM_PORTS; i++) {
++		struct switch_port *p;
++
++		if (!(ports & (1 << i)))
++			continue;
++
++		p = &val->value.ports[val->len++];
++		p->id = i;
++		if (tagged & (1 << i))
++			p->flags = (1 << SWITCH_PORT_FLAG_TAGGED);
++		else
++			p->flags = 0;
++	}
++
++	return 0;
++};
++
++static int
++adm6996_set_ports(struct switch_dev *dev, struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++	u8 *ports = &priv->vlan_table[val->port_vlan];
++	u8 *tagged = &priv->vlan_tagged[val->port_vlan];
++	int i;
++
++	pr_devel("set_ports port_vlan %d ports", val->port_vlan);
++
++	*ports = 0;
++	*tagged = 0;
++
++	for (i = 0; i < val->len; i++) {
++		struct switch_port *p = &val->value.ports[i];
++
++#ifdef DEBUG
++		pr_cont(" %d%s", p->id,
++		       ((p->flags & (1 << SWITCH_PORT_FLAG_TAGGED)) ? "T" :
++			""));
++#endif
++
++		if (p->flags & (1 << SWITCH_PORT_FLAG_TAGGED)) {
++			*tagged |= (1 << p->id);
++			priv->tagged_ports |= (1 << p->id);
++		}
++
++		*ports |= (1 << p->id);
++	}
++
++#ifdef DEBUG
++	pr_cont("\n");
++#endif
++
++	return 0;
++};
++
++/*
++ * Precondition: reg_mutex must be held
++ */
++static void
++adm6996_enable_vlan(struct adm6996_priv *priv)
++{
++	u16 reg;
++
++	reg = r16(priv, ADM_OTBE_P2_PVID);
++	reg &= ~(ADM_OTBE_MASK);
++	w16(priv, ADM_OTBE_P2_PVID, reg);
++	reg = r16(priv, ADM_IFNTE);
++	reg &= ~(ADM_IFNTE_MASK);
++	w16(priv, ADM_IFNTE, reg);
++	reg = r16(priv, ADM_VID_CHECK);
++	reg |= ADM_VID_CHECK_MASK;
++	w16(priv, ADM_VID_CHECK, reg);
++	reg = r16(priv, ADM_SYSC0);
++	reg |= ADM_NTTE;
++	reg &= ~(ADM_RVID1);
++	w16(priv, ADM_SYSC0, reg);
++	reg = r16(priv, ADM_SYSC3);
++	reg |= ADM_TBV;
++	w16(priv, ADM_SYSC3, reg);
++}
++
++static void
++adm6996_enable_vlan_6996l(struct adm6996_priv *priv)
++{
++	u16 reg;
++
++	reg = r16(priv, ADM_SYSC3);
++	reg |= ADM_TBV;
++	reg |= ADM_MAC_CLONE;
++	w16(priv, ADM_SYSC3, reg);
++}
++
++/*
++ * Disable VLANs
++ *
++ * Sets VLAN mapping for port-based VLAN with all ports connected to
++ * eachother (this is also the power-on default).
++ *
++ * Precondition: reg_mutex must be held
++ */
++static void
++adm6996_disable_vlan(struct adm6996_priv *priv)
++{
++	u16 reg;
++	int i;
++
++	for (i = 0; i < ADM_NUM_VLANS; i++) {
++		reg = ADM_VLAN_FILT_MEMBER_MASK;
++		w16(priv, ADM_VLAN_FILT_L(i), reg);
++		reg = ADM_VLAN_FILT_VALID | ADM_VLAN_FILT_VID(1);
++		w16(priv, ADM_VLAN_FILT_H(i), reg);
++	}
++
++	reg = r16(priv, ADM_OTBE_P2_PVID);
++	reg |= ADM_OTBE_MASK;
++	w16(priv, ADM_OTBE_P2_PVID, reg);
++	reg = r16(priv, ADM_IFNTE);
++	reg |= ADM_IFNTE_MASK;
++	w16(priv, ADM_IFNTE, reg);
++	reg = r16(priv, ADM_VID_CHECK);
++	reg &= ~(ADM_VID_CHECK_MASK);
++	w16(priv, ADM_VID_CHECK, reg);
++	reg = r16(priv, ADM_SYSC0);
++	reg &= ~(ADM_NTTE);
++	reg |= ADM_RVID1;
++	w16(priv, ADM_SYSC0, reg);
++	reg = r16(priv, ADM_SYSC3);
++	reg &= ~(ADM_TBV);
++	w16(priv, ADM_SYSC3, reg);
++}
++
++/*
++ * Disable VLANs
++ *
++ * Sets VLAN mapping for port-based VLAN with all ports connected to
++ * eachother (this is also the power-on default).
++ *
++ * Precondition: reg_mutex must be held
++ */
++static void
++adm6996_disable_vlan_6996l(struct adm6996_priv *priv)
++{
++	u16 reg;
++	int i;
++
++	for (i = 0; i < ADM_NUM_VLANS; i++) {
++		w16(priv, ADM_VLAN_MAP(i), 0);
++	}
++
++	reg = r16(priv, ADM_SYSC3);
++	reg &= ~(ADM_TBV);
++	reg &= ~(ADM_MAC_CLONE);
++	w16(priv, ADM_SYSC3, reg);
++}
++
++/*
++ * Precondition: reg_mutex must be held
++ */
++static void
++adm6996_apply_port_pvids(struct adm6996_priv *priv)
++{
++	u16 reg;
++	int i;
++
++	for (i = 0; i < ADM_NUM_PORTS; i++) {
++		reg = r16(priv, adm_portcfg[i]);
++		reg &= ~(ADM_PORTCFG_PVID_MASK);
++		reg |= ADM_PORTCFG_PVID(priv->pvid[i]);
++		if (priv->model == ADM6996L) {
++			if (priv->tagged_ports & (1 << i))
++				reg |= (1 << 4);
++			else
++				reg &= ~(1 << 4);
++		}
++		w16(priv, adm_portcfg[i], reg);
++	}
++
++	w16(priv, ADM_P0_PVID, ADM_P0_PVID_VAL(priv->pvid[0]));
++	w16(priv, ADM_P1_PVID, ADM_P1_PVID_VAL(priv->pvid[1]));
++	reg = r16(priv, ADM_OTBE_P2_PVID);
++	reg &= ~(ADM_P2_PVID_MASK);
++	reg |= ADM_P2_PVID_VAL(priv->pvid[2]);
++	w16(priv, ADM_OTBE_P2_PVID, reg);
++	reg = ADM_P3_PVID_VAL(priv->pvid[3]);
++	reg |= ADM_P4_PVID_VAL(priv->pvid[4]);
++	w16(priv, ADM_P3_P4_PVID, reg);
++	reg = r16(priv, ADM_P5_PVID);
++	reg &= ~(ADM_P2_PVID_MASK);
++	reg |= ADM_P5_PVID_VAL(priv->pvid[5]);
++	w16(priv, ADM_P5_PVID, reg);
++}
++
++/*
++ * Precondition: reg_mutex must be held
++ */
++static void
++adm6996_apply_vlan_filters(struct adm6996_priv *priv)
++{
++	u8 ports, tagged;
++	u16 vid, reg;
++	int i;
++
++	for (i = 0; i < ADM_NUM_VLANS; i++) {
++		vid = priv->vlan_id[i];
++		ports = priv->vlan_table[i];
++		tagged = priv->vlan_tagged[i];
++
++		if (ports == 0) {
++			/* Disable VLAN entry */
++			w16(priv, ADM_VLAN_FILT_H(i), 0);
++			w16(priv, ADM_VLAN_FILT_L(i), 0);
++			continue;
++		}
++
++		reg = ADM_VLAN_FILT_MEMBER(ports);
++		reg |= ADM_VLAN_FILT_TAGGED(tagged);
++		w16(priv, ADM_VLAN_FILT_L(i), reg);
++		reg = ADM_VLAN_FILT_VALID | ADM_VLAN_FILT_VID(vid);
++		w16(priv, ADM_VLAN_FILT_H(i), reg);
++	}
++}
++
++static void
++adm6996_apply_vlan_filters_6996l(struct adm6996_priv *priv)
++{
++	u8 ports;
++	u16 reg;
++	int i;
++
++	for (i = 0; i < ADM_NUM_VLANS; i++) {
++		ports = priv->vlan_table[i];
++
++		if (ports == 0) {
++			/* Disable VLAN entry */
++			w16(priv, ADM_VLAN_MAP(i), 0);
++			continue;
++		} else {
++			reg = ADM_VLAN_FILT(ports);
++			w16(priv, ADM_VLAN_MAP(i), reg);
++		}
++	}
++}
++
++static int
++adm6996_hw_apply(struct switch_dev *dev)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	pr_devel("hw_apply\n");
++
++	mutex_lock(&priv->reg_mutex);
++
++	if (!priv->enable_vlan) {
++		if (priv->vlan_enabled) {
++			if (priv->model == ADM6996L)
++				adm6996_disable_vlan_6996l(priv);
++			else
++				adm6996_disable_vlan(priv);
++			priv->vlan_enabled = 0;
++		}
++		goto out;
++	}
++
++	if (!priv->vlan_enabled) {
++		if (priv->model == ADM6996L)
++			adm6996_enable_vlan_6996l(priv);
++		else
++			adm6996_enable_vlan(priv);
++		priv->vlan_enabled = 1;
++	}
++
++	adm6996_apply_port_pvids(priv);
++	if (priv->model == ADM6996L)
++		adm6996_apply_vlan_filters_6996l(priv);
++	else
++		adm6996_apply_vlan_filters(priv);
++
++out:
++	mutex_unlock(&priv->reg_mutex);
++
++	return 0;
++}
++
++/*
++ * Reset the switch
++ *
++ * The ADM6996 can't do a software-initiated reset, so we just initialise the
++ * registers we support in this driver.
++ *
++ * Precondition: reg_mutex must be held
++ */
++static void
++adm6996_perform_reset (struct adm6996_priv *priv)
++{
++	int i;
++
++	/* initialize port and vlan settings */
++	for (i = 0; i < ADM_NUM_PORTS - 1; i++) {
++		w16(priv, adm_portcfg[i], ADM_PORTCFG_INIT |
++			ADM_PORTCFG_PVID(0));
++	}
++	w16(priv, adm_portcfg[5], ADM_PORTCFG_CPU);
++
++	if (priv->model == ADM6996M || priv->model == ADM6996FC) {
++		/* reset all PHY ports */
++		for (i = 0; i < ADM_PHY_PORTS; i++) {
++			w16(priv, ADM_PHY_PORT(i), ADM_PHYCFG_INIT);
++		}
++	}
++
++	priv->enable_vlan = 0;
++	priv->vlan_enabled = 0;
++
++	for (i = 0; i < ADM_NUM_PORTS; i++) {
++		priv->pvid[i] = 0;
++	}
++
++	for (i = 0; i < ADM_NUM_VLANS; i++) {
++		priv->vlan_id[i] = i;
++		priv->vlan_table[i] = 0;
++		priv->vlan_tagged[i] = 0;
++	}
++
++	if (priv->model == ADM6996M) {
++		/* Clear VLAN priority map so prio's are unused */
++		w16 (priv, ADM_VLAN_PRIOMAP, 0);
++
++		adm6996_disable_vlan(priv);
++		adm6996_apply_port_pvids(priv);
++	} else if (priv->model == ADM6996L) {
++		/* Clear VLAN priority map so prio's are unused */
++		w16 (priv, ADM_VLAN_PRIOMAP, 0);
++
++		adm6996_disable_vlan_6996l(priv);
++		adm6996_apply_port_pvids(priv);
++	}
++}
++
++static int
++adm6996_reset_switch(struct switch_dev *dev)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++
++	pr_devel("reset\n");
++
++	mutex_lock(&priv->reg_mutex);
++	adm6996_perform_reset (priv);
++	mutex_unlock(&priv->reg_mutex);
++	return 0;
++}
++
++static int
++adm6996_get_port_link(struct switch_dev *dev, int port,
++		struct switch_port_link *link)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++	
++	u16 reg = 0;
++	
++	if (port >= ADM_NUM_PORTS)
++		return -EINVAL;
++	
++	switch (port) {
++	case 0:
++		reg = r16(priv, ADM_PS0);
++		break;
++	case 1:
++		reg = r16(priv, ADM_PS0);
++		reg = reg >> 8;
++		break;
++	case 2:
++		reg = r16(priv, ADM_PS1);
++		break;
++	case 3:
++		reg = r16(priv, ADM_PS1);
++		reg = reg >> 8;
++		break;
++	case 4:
++		reg = r16(priv, ADM_PS1);
++		reg = reg >> 12;
++		break;
++	case 5:
++		reg = r16(priv, ADM_PS2);
++		/* Bits 0, 1, 3 and 4. */
++		reg = (reg & 3) | ((reg & 24) >> 1);
++		break;
++	default:
++		return -EINVAL;
++	}
++	
++	link->link = reg & ADM_PS_LS;
++	if (!link->link)
++		return 0;
++	link->aneg = true;
++	link->duplex = reg & ADM_PS_DS;
++	link->tx_flow = reg & ADM_PS_FCS;
++	link->rx_flow = reg & ADM_PS_FCS;
++	if (reg & ADM_PS_SS)
++		link->speed = SWITCH_PORT_SPEED_100;
++	else
++		link->speed = SWITCH_PORT_SPEED_10;
++
++	return 0;
++}
++
++static int
++adm6996_sw_get_port_mib(struct switch_dev *dev,
++		       const struct switch_attr *attr,
++		       struct switch_val *val)
++{
++	struct adm6996_priv *priv = to_adm(dev);
++	int port;
++	char *buf = priv->buf;
++	int i, len = 0;
++	u32 reg = 0;
++
++	port = val->port_vlan;
++	if (port >= ADM_NUM_PORTS)
++		return -EINVAL;
++
++	mutex_lock(&priv->mib_lock);
++
++	len += snprintf(buf + len, sizeof(priv->buf) - len,
++			"Port %d MIB counters\n",
++			port);
++
++	for (i = 0; i < ARRAY_SIZE(adm6996_mibs); i++) {
++		reg = r16(priv, adm6996_mibs[i].offset + ADM_OFFSET_PORT(port));
++		reg += r16(priv, adm6996_mibs[i].offset + ADM_OFFSET_PORT(port) + 1) << 16;
++		len += snprintf(buf + len, sizeof(priv->buf) - len,
++				"%-12s: %u\n",
++				adm6996_mibs[i].name,
++				reg);
++	}
++
++	mutex_unlock(&priv->mib_lock);
++
++	val->value.s = buf;
++	val->len = len;
++
++	return 0;
++}
++
++static struct switch_attr adm6996_globals[] = {
++	{
++	 .type = SWITCH_TYPE_INT,
++	 .name = "enable_vlan",
++	 .description = "Enable VLANs",
++	 .set = adm6996_set_enable_vlan,
++	 .get = adm6996_get_enable_vlan,
++	},
++#ifdef DEBUG
++	{
++	 .type = SWITCH_TYPE_INT,
++	 .name = "addr",
++	 .description =
++	 "Direct register access: set register address (0 - 1023)",
++	 .set = adm6996_set_addr,
++	 .get = adm6996_get_addr,
++	 },
++	{
++	 .type = SWITCH_TYPE_INT,
++	 .name = "data",
++	 .description =
++	 "Direct register access: read/write to register (0 - 65535)",
++	 .set = adm6996_set_data,
++	 .get = adm6996_get_data,
++	 },
++#endif /* def DEBUG */
++};
++
++static struct switch_attr adm6996_port[] = {
++	{
++	 .type = SWITCH_TYPE_STRING,
++	 .name = "mib",
++	 .description = "Get port's MIB counters",
++	 .set = NULL,
++	 .get = adm6996_sw_get_port_mib,
++	},
++};
++
++static struct switch_attr adm6996_vlan[] = {
++	{
++	 .type = SWITCH_TYPE_INT,
++	 .name = "vid",
++	 .description = "VLAN ID",
++	 .set = adm6996_set_vid,
++	 .get = adm6996_get_vid,
++	 },
++};
++
++static struct switch_dev_ops adm6996_ops = {
++	.attr_global = {
++			.attr = adm6996_globals,
++			.n_attr = ARRAY_SIZE(adm6996_globals),
++			},
++	.attr_port = {
++		      .attr = adm6996_port,
++		      .n_attr = ARRAY_SIZE(adm6996_port),
++		      },
++	.attr_vlan = {
++		      .attr = adm6996_vlan,
++		      .n_attr = ARRAY_SIZE(adm6996_vlan),
++		      },
++	.get_port_pvid = adm6996_get_pvid,
++	.set_port_pvid = adm6996_set_pvid,
++	.get_vlan_ports = adm6996_get_ports,
++	.set_vlan_ports = adm6996_set_ports,
++	.apply_config = adm6996_hw_apply,
++	.reset_switch = adm6996_reset_switch,
++	.get_port_link = adm6996_get_port_link,
++};
++
++static int adm6996_switch_init(struct adm6996_priv *priv, const char *alias, struct net_device *netdev)
++{
++	struct switch_dev *swdev;
++	u16 test, old;
++
++	if (!priv->model) {
++		/* Detect type of chip */
++		old = r16(priv, ADM_VID_CHECK);
++		test = old ^ (1 << 12);
++		w16(priv, ADM_VID_CHECK, test);
++		test ^= r16(priv, ADM_VID_CHECK);
++		if (test & (1 << 12)) {
++			/* 
++			 * Bit 12 of this register is read-only. 
++			 * This is the FC model. 
++			 */
++			priv->model = ADM6996FC;
++		} else {
++			/* Bit 12 is read-write. This is the M model. */
++			priv->model = ADM6996M;
++			w16(priv, ADM_VID_CHECK, old);
++		}
++	}
++
++	swdev = &priv->dev;
++	swdev->name = (adm6996_model_name[priv->model]);
++	swdev->cpu_port = ADM_CPU_PORT;
++	swdev->ports = ADM_NUM_PORTS;
++	swdev->vlans = ADM_NUM_VLANS;
++	swdev->ops = &adm6996_ops;
++	swdev->alias = alias;
++
++	/* The ADM6996L connected through GPIOs does not support any switch
++	   status calls */
++	if (priv->model == ADM6996L) {
++		adm6996_ops.attr_port.n_attr = 0;
++		adm6996_ops.get_port_link = NULL;
++	}
++
++	pr_info ("%s: %s model PHY found.\n", alias, swdev->name);
++
++	mutex_lock(&priv->reg_mutex);
++	adm6996_perform_reset (priv);
++	mutex_unlock(&priv->reg_mutex);
++
++	if (priv->model == ADM6996M || priv->model == ADM6996L) {
++		return register_switch(swdev, netdev);
++	}
++
++	return -ENODEV;
++}
++
++static int adm6996_config_init(struct phy_device *pdev)
++{
++	struct adm6996_priv *priv;
++	int ret;
++
++	pdev->supported = ADVERTISED_100baseT_Full;
++	pdev->advertising = ADVERTISED_100baseT_Full;
++
++	if (pdev->addr != 0) {
++		pr_info ("%s: PHY overlaps ADM6996, providing fixed PHY 0x%x.\n"
++				, pdev->attached_dev->name, pdev->addr);
++		return 0;
++	}
++
++	priv = devm_kzalloc(&pdev->dev, sizeof(struct adm6996_priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	mutex_init(&priv->reg_mutex);
++	mutex_init(&priv->mib_lock);
++	priv->priv = pdev;
++	priv->read = adm6996_read_mii_reg;
++	priv->write = adm6996_write_mii_reg;
++
++	ret = adm6996_switch_init(priv, pdev->attached_dev->name, pdev->attached_dev);
++	if (ret < 0)
++		return ret;
++
++	pdev->priv = priv;
++
++	return 0;
++}
++
++/*
++ * Warning: phydev->priv is NULL if phydev->addr != 0
++ */
++static int adm6996_read_status(struct phy_device *phydev)
++{
++	phydev->speed = SPEED_100;
++	phydev->duplex = DUPLEX_FULL;
++	phydev->link = 1;
++	return 0;
++}
++
++/*
++ * Warning: phydev->priv is NULL if phydev->addr != 0
++ */
++static int adm6996_config_aneg(struct phy_device *phydev)
++{
++	return 0;
++}
++
++static int adm6996_fixup(struct phy_device *dev)
++{
++	struct mii_bus *bus = dev->bus;
++	u16 reg;
++
++	/* Our custom registers are at PHY addresses 0-10. Claim those. */
++	if (dev->addr > 10)
++		return 0;
++
++	/* look for the switch on the bus */
++	reg = bus->read(bus, PHYADDR(ADM_SIG0)) & ADM_SIG0_MASK;
++	if (reg != ADM_SIG0_VAL)
++		return 0;
++
++	reg = bus->read(bus, PHYADDR(ADM_SIG1)) & ADM_SIG1_MASK;
++	if (reg != ADM_SIG1_VAL)
++		return 0;
++
++	dev->phy_id = (ADM_SIG0_VAL << 16) | ADM_SIG1_VAL;
++
++	return 0;
++}
++
++static int adm6996_probe(struct phy_device *pdev)
++{
++	return 0;
++}
++
++static void adm6996_remove(struct phy_device *pdev)
++{
++	struct adm6996_priv *priv = phy_to_adm(pdev);
++
++	if (priv && (priv->model == ADM6996M || priv->model == ADM6996L))
++		unregister_switch(&priv->dev);
++}
++
++static int adm6996_soft_reset(struct phy_device *phydev)
++{
++	/* we don't need an extra reset */
++	return 0;
++}
++
++static struct phy_driver adm6996_phy_driver = {
++	.name		= "Infineon ADM6996",
++	.phy_id		= (ADM_SIG0_VAL << 16) | ADM_SIG1_VAL,
++	.phy_id_mask	= 0xffffffff,
++	.features	= PHY_BASIC_FEATURES,
++	.probe		= adm6996_probe,
++	.remove		= adm6996_remove,
++	.config_init	= &adm6996_config_init,
++	.config_aneg	= &adm6996_config_aneg,
++	.read_status	= &adm6996_read_status,
++	.soft_reset	= adm6996_soft_reset,
++	.driver		= { .owner = THIS_MODULE,},
++};
++
++static int adm6996_gpio_probe(struct platform_device *pdev)
++{
++	struct adm6996_gpio_platform_data *pdata = pdev->dev.platform_data;
++	struct adm6996_priv *priv;
++	int ret;
++
++	if (!pdata)
++		return -EINVAL;
++				  
++	priv = devm_kzalloc(&pdev->dev, sizeof(struct adm6996_priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	mutex_init(&priv->reg_mutex);
++	mutex_init(&priv->mib_lock);
++
++	priv->eecs = pdata->eecs;
++	priv->eedi = pdata->eedi;
++	priv->eerc = pdata->eerc;
++	priv->eesk = pdata->eesk;
++
++	priv->model = pdata->model;
++	priv->read = adm6996_read_gpio_reg;
++	priv->write = adm6996_write_gpio_reg;
++
++	ret = devm_gpio_request(&pdev->dev, priv->eecs, "adm_eecs");
++	if (ret)
++		return ret;
++	ret = devm_gpio_request(&pdev->dev, priv->eedi, "adm_eedi");
++	if (ret)
++		return ret;
++	ret = devm_gpio_request(&pdev->dev, priv->eerc, "adm_eerc");
++	if (ret)
++		return ret;
++	ret = devm_gpio_request(&pdev->dev, priv->eesk, "adm_eesk");
++	if (ret)
++		return ret;
++
++	ret = adm6996_switch_init(priv, dev_name(&pdev->dev), NULL);
++	if (ret < 0)
++		return ret;
++
++	platform_set_drvdata(pdev, priv);
++
++	return 0;
++}
++
++static int adm6996_gpio_remove(struct platform_device *pdev)
++{
++	struct adm6996_priv *priv = platform_get_drvdata(pdev);
++
++	if (priv && (priv->model == ADM6996M || priv->model == ADM6996L))
++		unregister_switch(&priv->dev);
++
++	return 0;
++}
++
++static struct platform_driver adm6996_gpio_driver = {
++	.probe = adm6996_gpio_probe,
++	.remove = adm6996_gpio_remove,
++	.driver = {
++		.name = "adm6996_gpio",
++	},
++};
++
++static int __init adm6996_init(void)
++{
++	int err;
++
++	phy_register_fixup_for_id(PHY_ANY_ID, adm6996_fixup);
++	err =  phy_driver_register(&adm6996_phy_driver);
++	if (err)
++		return err;
++
++	err = platform_driver_register(&adm6996_gpio_driver);
++	if (err)
++		phy_driver_unregister(&adm6996_phy_driver);
++
++	return err;
++}
++
++static void __exit adm6996_exit(void)
++{
++	platform_driver_unregister(&adm6996_gpio_driver);
++	phy_driver_unregister(&adm6996_phy_driver);
++}
++
++module_init(adm6996_init);
++module_exit(adm6996_exit);
+Index: linux-4.1.11/drivers/net/phy/adm6996.h
+===================================================================
+--- /dev/null
++++ linux-4.1.11/drivers/net/phy/adm6996.h
+@@ -0,0 +1,186 @@
++/*
++ * ADM6996 switch driver
++ *
++ * Copyright (c) 2008 Felix Fietkau <nbd@nbd.name>
++ * Copyright (c) 2010,2011 Peter Lebbing <peter@digitalbrains.com>
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of the GNU General Public License v2 as published by the
++ * Free Software Foundation
++ */
++#ifndef __ADM6996_H
++#define __ADM6996_H
++
++/*
++ * ADM_PHY_PORTS: Number of ports with a PHY.
++ * We only control ports 0 to 3, because if 4 is connected, it is most likely
++ * not connected to the switch but to a separate MII and MAC for the WAN port.
++ */
++#define ADM_PHY_PORTS	4
++#define ADM_NUM_PORTS	6
++#define ADM_CPU_PORT	5
++
++#define ADM_NUM_VLANS 16
++#define ADM_VLAN_MAX_ID 4094
++
++enum admreg {
++	ADM_EEPROM_BASE		= 0x0,
++		ADM_P0_CFG		= ADM_EEPROM_BASE + 1,
++		ADM_P1_CFG		= ADM_EEPROM_BASE + 3,
++		ADM_P2_CFG		= ADM_EEPROM_BASE + 5,
++		ADM_P3_CFG		= ADM_EEPROM_BASE + 7,
++		ADM_P4_CFG		= ADM_EEPROM_BASE + 8,
++		ADM_P5_CFG		= ADM_EEPROM_BASE + 9,
++		ADM_SYSC0		= ADM_EEPROM_BASE + 0xa,
++		ADM_VLAN_PRIOMAP	= ADM_EEPROM_BASE + 0xe,
++		ADM_SYSC3		= ADM_EEPROM_BASE + 0x11,
++		/* Input Force No Tag Enable */
++		ADM_IFNTE		= ADM_EEPROM_BASE + 0x20,
++		ADM_VID_CHECK		= ADM_EEPROM_BASE + 0x26,
++		ADM_P0_PVID		= ADM_EEPROM_BASE + 0x28,
++		ADM_P1_PVID		= ADM_EEPROM_BASE + 0x29,
++		/* Output Tag Bypass Enable and P2 PVID */
++		ADM_OTBE_P2_PVID	= ADM_EEPROM_BASE + 0x2a,
++		ADM_P3_P4_PVID		= ADM_EEPROM_BASE + 0x2b,
++		ADM_P5_PVID		= ADM_EEPROM_BASE + 0x2c,
++	ADM_EEPROM_EXT_BASE	= 0x40,
++#define ADM_VLAN_FILT_L(n) (ADM_EEPROM_EXT_BASE + 2 * (n))
++#define ADM_VLAN_FILT_H(n) (ADM_EEPROM_EXT_BASE + 1 + 2 * (n))
++#define ADM_VLAN_MAP(n) (ADM_EEPROM_BASE + 0x13 + n)
++	ADM_COUNTER_BASE	= 0xa0,
++		ADM_SIG0		= ADM_COUNTER_BASE + 0,
++		ADM_SIG1		= ADM_COUNTER_BASE + 1,
++		ADM_PS0		= ADM_COUNTER_BASE + 2,
++		ADM_PS1		= ADM_COUNTER_BASE + 3,
++		ADM_PS2		= ADM_COUNTER_BASE + 4,
++		ADM_CL0		= ADM_COUNTER_BASE + 8, /* RxPacket */
++		ADM_CL6		= ADM_COUNTER_BASE + 0x1a, /* RxByte */
++		ADM_CL12		= ADM_COUNTER_BASE + 0x2c, /* TxPacket */
++		ADM_CL18		= ADM_COUNTER_BASE + 0x3e, /* TxByte */
++		ADM_CL24		= ADM_COUNTER_BASE + 0x50, /* Coll */
++		ADM_CL30		= ADM_COUNTER_BASE + 0x62, /* Err */
++#define ADM_OFFSET_PORT(n) ((n * 4) - (n / 4) * 2 - (n / 5) * 2)
++	ADM_PHY_BASE		= 0x200,
++#define ADM_PHY_PORT(n) (ADM_PHY_BASE + (0x20 * n))
++};
++
++/* Chip identification patterns */
++#define	ADM_SIG0_MASK	0xffff
++#define ADM_SIG0_VAL	0x1023
++#define ADM_SIG1_MASK	0xffff
++#define ADM_SIG1_VAL	0x0007
++
++enum {
++	ADM_PHYCFG_COLTST     = (1 << 7),	/* Enable collision test */
++	ADM_PHYCFG_DPLX       = (1 << 8),	/* Enable full duplex */
++	ADM_PHYCFG_ANEN_RST   = (1 << 9),	/* Restart auto negotiation (self clear) */
++	ADM_PHYCFG_ISO        = (1 << 10),	/* Isolate PHY */
++	ADM_PHYCFG_PDN        = (1 << 11),	/* Power down PHY */
++	ADM_PHYCFG_ANEN       = (1 << 12),	/* Enable auto negotiation */
++	ADM_PHYCFG_SPEED_100  = (1 << 13),	/* Enable 100 Mbit/s */
++	ADM_PHYCFG_LPBK       = (1 << 14),	/* Enable loopback operation */
++	ADM_PHYCFG_RST        = (1 << 15),	/* Reset the port (self clear) */
++	ADM_PHYCFG_INIT = (
++		ADM_PHYCFG_RST |
++		ADM_PHYCFG_SPEED_100 |
++		ADM_PHYCFG_ANEN |
++		ADM_PHYCFG_ANEN_RST
++	)
++};
++
++enum {
++	ADM_PORTCFG_FC        = (1 << 0),	/* Enable 802.x flow control */
++	ADM_PORTCFG_AN        = (1 << 1),	/* Enable auto-negotiation */
++	ADM_PORTCFG_SPEED_100 = (1 << 2),	/* Enable 100 Mbit/s */
++	ADM_PORTCFG_DPLX      = (1 << 3),	/* Enable full duplex */
++	ADM_PORTCFG_OT        = (1 << 4),	/* Output tagged packets */
++	ADM_PORTCFG_PD        = (1 << 5),	/* Port disable */
++	ADM_PORTCFG_TV_PRIO   = (1 << 6),	/* 0 = VLAN based priority
++	                                 	 * 1 = TOS based priority */
++	ADM_PORTCFG_PPE       = (1 << 7),	/* Port based priority enable */
++	ADM_PORTCFG_PP_S      = (1 << 8),	/* Port based priority, 2 bits */
++	ADM_PORTCFG_PVID_BASE = (1 << 10),	/* Primary VLAN id, 4 bits */
++	ADM_PORTCFG_FSE	      = (1 << 14),	/* Fx select enable */
++	ADM_PORTCFG_CAM       = (1 << 15),	/* Crossover Auto MDIX */
++
++	ADM_PORTCFG_INIT = (
++		ADM_PORTCFG_FC |
++		ADM_PORTCFG_AN |
++		ADM_PORTCFG_SPEED_100 |
++		ADM_PORTCFG_DPLX |
++		ADM_PORTCFG_CAM
++	),
++	ADM_PORTCFG_CPU = (
++		ADM_PORTCFG_FC |
++		ADM_PORTCFG_SPEED_100 |
++		ADM_PORTCFG_OT |
++		ADM_PORTCFG_DPLX
++	),
++};
++
++#define ADM_PORTCFG_PPID(n) ((n & 0x3) << 8)
++#define ADM_PORTCFG_PVID(n) ((n & 0xf) << 10)
++#define ADM_PORTCFG_PVID_MASK (0xf << 10)
++
++#define ADM_IFNTE_MASK (0x3f << 9)
++#define ADM_VID_CHECK_MASK (0x3f << 6)
++
++#define ADM_P0_PVID_VAL(n) ((((n) & 0xff0) >> 4) << 0)
++#define ADM_P1_PVID_VAL(n) ((((n) & 0xff0) >> 4) << 0)
++#define ADM_P2_PVID_VAL(n) ((((n) & 0xff0) >> 4) << 0)
++#define ADM_P3_PVID_VAL(n) ((((n) & 0xff0) >> 4) << 0)
++#define ADM_P4_PVID_VAL(n) ((((n) & 0xff0) >> 4) << 8)
++#define ADM_P5_PVID_VAL(n) ((((n) & 0xff0) >> 4) << 0)
++#define ADM_P2_PVID_MASK 0xff
++
++#define ADM_OTBE(n) (((n) & 0x3f) << 8)
++#define ADM_OTBE_MASK (0x3f << 8)
++
++/* ADM_SYSC0 */
++enum {
++	ADM_NTTE	= (1 << 2),	/* New Tag Transmit Enable */
++	ADM_RVID1	= (1 << 8)	/* Replace VLAN ID 1 */
++};
++
++/* Tag Based VLAN in ADM_SYSC3 */
++#define ADM_MAC_CLONE	BIT(4)
++#define ADM_TBV		BIT(5)
++
++static const u8 adm_portcfg[] = {
++	[0] = ADM_P0_CFG,
++	[1] = ADM_P1_CFG,
++	[2] = ADM_P2_CFG,
++	[3] = ADM_P3_CFG,
++	[4] = ADM_P4_CFG,
++	[5] = ADM_P5_CFG,
++};
++
++/* Fields in ADM_VLAN_FILT_L(x) */
++#define ADM_VLAN_FILT_FID(n) (((n) & 0xf) << 12)
++#define ADM_VLAN_FILT_TAGGED(n) (((n) & 0x3f) << 6)
++#define ADM_VLAN_FILT_MEMBER(n) (((n) & 0x3f) << 0)
++#define ADM_VLAN_FILT_MEMBER_MASK 0x3f
++/* Fields in ADM_VLAN_FILT_H(x) */
++#define ADM_VLAN_FILT_VALID (1 << 15)
++#define ADM_VLAN_FILT_VID(n) (((n) & 0xfff) << 0)
++
++/* Convert ports to a form for ADM6996L VLAN map */
++#define ADM_VLAN_FILT(ports) ((ports & 0x01) | ((ports & 0x02) << 1) | \
++			((ports & 0x04) << 2) | ((ports & 0x08) << 3) | \
++			((ports & 0x10) << 3) | ((ports & 0x20) << 3))
++
++/* Port status register */
++enum {
++	ADM_PS_LS = (1 << 0),	/* Link status */
++	ADM_PS_SS = (1 << 1),	/* Speed status */
++	ADM_PS_DS = (1 << 2),	/* Duplex status */
++	ADM_PS_FCS = (1 << 3)	/* Flow control status */
++};
++
++/*
++ * Split the register address in phy id and register
++ * it will get combined again by the mdio bus op
++ */
++#define PHYADDR(_reg)	((_reg >> 5) & 0xff), (_reg & 0x1f)
++
++#endif
+Index: linux-4.1.11/include/linux/platform_data/adm6996-gpio.h
+===================================================================
+--- /dev/null
++++ linux-4.1.11/include/linux/platform_data/adm6996-gpio.h
+@@ -0,0 +1,30 @@
++/*
++ * ADM6996 GPIO platform data
++ *
++ * Copyright (C) 2013 Hauke Mehrtens <hauke@hauke-m.de>
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of the GNU General Public License v2 as published by the
++ * Free Software Foundation
++ */
++
++#ifndef __PLATFORM_ADM6996_GPIO_H
++#define __PLATFORM_ADM6996_GPIO_H
++
++#include <linux/kernel.h>
++
++enum adm6996_model {
++	ADM6996FC = 1,
++	ADM6996M = 2,
++	ADM6996L = 3,
++};
++
++struct adm6996_gpio_platform_data {
++	u8 eecs;
++	u8 eesk;
++	u8 eedi;
++	u8 eerc;
++	enum adm6996_model model;
++};
++
++#endif
+Index: linux-4.1.11/include/linux/switch.h
+===================================================================
+--- /dev/null
++++ linux-4.1.11/include/linux/switch.h
+@@ -0,0 +1,179 @@
++/*
++ * switch.h: Switch configuration API
++ *
++ * Copyright (C) 2008 Felix Fietkau <nbd@nbd.name>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++#ifndef _LINUX_SWITCH_H
++#define _LINUX_SWITCH_H
++
++#include <net/genetlink.h>
++#include <uapi/linux/switch.h>
++
++struct switch_dev;
++struct switch_op;
++struct switch_val;
++struct switch_attr;
++struct switch_attrlist;
++struct switch_led_trigger;
++
++int register_switch(struct switch_dev *dev, struct net_device *netdev);
++void unregister_switch(struct switch_dev *dev);
++
++/**
++ * struct switch_attrlist - attribute list
++ *
++ * @n_attr: number of attributes
++ * @attr: pointer to the attributes array
++ */
++struct switch_attrlist {
++	int n_attr;
++	const struct switch_attr *attr;
++};
++
++enum switch_port_speed {
++	SWITCH_PORT_SPEED_UNKNOWN = 0,
++	SWITCH_PORT_SPEED_10 = 10,
++	SWITCH_PORT_SPEED_100 = 100,
++	SWITCH_PORT_SPEED_1000 = 1000,
++};
++
++struct switch_port_link {
++	bool link;
++	bool duplex;
++	bool aneg;
++	bool tx_flow;
++	bool rx_flow;
++	enum switch_port_speed speed;
++	/* in ethtool adv_t format */
++	u32 eee;
++};
++
++struct switch_port_stats {
++	unsigned long tx_bytes;
++	unsigned long rx_bytes;
++};
++
++/**
++ * struct switch_dev_ops - switch driver operations
++ *
++ * @attr_global: global switch attribute list
++ * @attr_port: port attribute list
++ * @attr_vlan: vlan attribute list
++ *
++ * Callbacks:
++ *
++ * @get_vlan_ports: read the port list of a VLAN
++ * @set_vlan_ports: set the port list of a VLAN
++ *
++ * @get_port_pvid: get the primary VLAN ID of a port
++ * @set_port_pvid: set the primary VLAN ID of a port
++ *
++ * @apply_config: apply all changed settings to the switch
++ * @reset_switch: resetting the switch
++ */
++struct switch_dev_ops {
++	struct switch_attrlist attr_global, attr_port, attr_vlan;
++
++	int (*get_vlan_ports)(struct switch_dev *dev, struct switch_val *val);
++	int (*set_vlan_ports)(struct switch_dev *dev, struct switch_val *val);
++
++	int (*get_port_pvid)(struct switch_dev *dev, int port, int *val);
++	int (*set_port_pvid)(struct switch_dev *dev, int port, int val);
++
++	int (*apply_config)(struct switch_dev *dev);
++	int (*reset_switch)(struct switch_dev *dev);
++
++	int (*get_port_link)(struct switch_dev *dev, int port,
++			     struct switch_port_link *link);
++	int (*set_port_link)(struct switch_dev *dev, int port,
++			     struct switch_port_link *link);
++	int (*get_port_stats)(struct switch_dev *dev, int port,
++			      struct switch_port_stats *stats);
++
++	int (*phy_read16)(struct switch_dev *dev, int addr, u8 reg, u16 *value);
++	int (*phy_write16)(struct switch_dev *dev, int addr, u8 reg, u16 value);
++};
++
++struct switch_dev {
++	struct device_node *of_node;
++	const struct switch_dev_ops *ops;
++	/* will be automatically filled */
++	char devname[IFNAMSIZ];
++
++	const char *name;
++	/* NB: either alias or netdev must be set */
++	const char *alias;
++	struct net_device *netdev;
++
++	int ports;
++	int vlans;
++	int cpu_port;
++
++	/* the following fields are internal for swconfig */
++	int id;
++	struct list_head dev_list;
++	unsigned long def_global, def_port, def_vlan;
++
++	struct mutex sw_mutex;
++	struct switch_port *portbuf;
++	struct switch_portmap *portmap;
++	struct switch_port_link linkbuf;
++
++	char buf[128];
++
++#ifdef CONFIG_SWCONFIG_LEDS
++	struct switch_led_trigger *led_trigger;
++#endif
++};
++
++struct switch_port {
++	u32 id;
++	u32 flags;
++};
++
++struct switch_portmap {
++	u32 virt;
++	const char *s;
++};
++
++struct switch_val {
++	const struct switch_attr *attr;
++	int port_vlan;
++	int len;
++	union {
++		const char *s;
++		u32 i;
++		struct switch_port *ports;
++		struct switch_port_link *link;
++	} value;
++};
++
++struct switch_attr {
++	int disabled;
++	int type;
++	const char *name;
++	const char *description;
++
++	int (*set)(struct switch_dev *dev, const struct switch_attr *attr, struct switch_val *val);
++	int (*get)(struct switch_dev *dev, const struct switch_attr *attr, struct switch_val *val);
++
++	/* for driver internal use */
++	int id;
++	int ofs;
++	int max;
++};
++
++int switch_generic_set_link(struct switch_dev *dev, int port,
++			    struct switch_port_link *link);
++
++#endif /* _LINUX_SWITCH_H */
+Index: linux-4.1.11/include/uapi/linux/switch.h
+===================================================================
+--- /dev/null
++++ linux-4.1.11/include/uapi/linux/switch.h
+@@ -0,0 +1,119 @@
++/*
++ * switch.h: Switch configuration API
++ *
++ * Copyright (C) 2008 Felix Fietkau <nbd@nbd.name>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef _UAPI_LINUX_SWITCH_H
++#define _UAPI_LINUX_SWITCH_H
++
++#include <linux/types.h>
++#include <linux/netdevice.h>
++#include <linux/netlink.h>
++#include <linux/genetlink.h>
++#ifndef __KERNEL__
++#include <netlink/netlink.h>
++#include <netlink/genl/genl.h>
++#include <netlink/genl/ctrl.h>
++#endif
++
++/* main attributes */
++enum {
++	SWITCH_ATTR_UNSPEC,
++	/* global */
++	SWITCH_ATTR_TYPE,
++	/* device */
++	SWITCH_ATTR_ID,
++	SWITCH_ATTR_DEV_NAME,
++	SWITCH_ATTR_ALIAS,
++	SWITCH_ATTR_NAME,
++	SWITCH_ATTR_VLANS,
++	SWITCH_ATTR_PORTS,
++	SWITCH_ATTR_PORTMAP,
++	SWITCH_ATTR_CPU_PORT,
++	/* attributes */
++	SWITCH_ATTR_OP_ID,
++	SWITCH_ATTR_OP_TYPE,
++	SWITCH_ATTR_OP_NAME,
++	SWITCH_ATTR_OP_PORT,
++	SWITCH_ATTR_OP_VLAN,
++	SWITCH_ATTR_OP_VALUE_INT,
++	SWITCH_ATTR_OP_VALUE_STR,
++	SWITCH_ATTR_OP_VALUE_PORTS,
++	SWITCH_ATTR_OP_VALUE_LINK,
++	SWITCH_ATTR_OP_DESCRIPTION,
++	/* port lists */
++	SWITCH_ATTR_PORT,
++	SWITCH_ATTR_MAX
++};
++
++enum {
++	/* port map */
++	SWITCH_PORTMAP_PORTS,
++	SWITCH_PORTMAP_SEGMENT,
++	SWITCH_PORTMAP_VIRT,
++	SWITCH_PORTMAP_MAX
++};
++
++/* commands */
++enum {
++	SWITCH_CMD_UNSPEC,
++	SWITCH_CMD_GET_SWITCH,
++	SWITCH_CMD_NEW_ATTR,
++	SWITCH_CMD_LIST_GLOBAL,
++	SWITCH_CMD_GET_GLOBAL,
++	SWITCH_CMD_SET_GLOBAL,
++	SWITCH_CMD_LIST_PORT,
++	SWITCH_CMD_GET_PORT,
++	SWITCH_CMD_SET_PORT,
++	SWITCH_CMD_LIST_VLAN,
++	SWITCH_CMD_GET_VLAN,
++	SWITCH_CMD_SET_VLAN
++};
++
++/* data types */
++enum switch_val_type {
++	SWITCH_TYPE_UNSPEC,
++	SWITCH_TYPE_INT,
++	SWITCH_TYPE_STRING,
++	SWITCH_TYPE_PORTS,
++	SWITCH_TYPE_LINK,
++	SWITCH_TYPE_NOVAL,
++};
++
++/* port nested attributes */
++enum {
++	SWITCH_PORT_UNSPEC,
++	SWITCH_PORT_ID,
++	SWITCH_PORT_FLAG_TAGGED,
++	SWITCH_PORT_ATTR_MAX
++};
++
++/* link nested attributes */
++enum {
++	SWITCH_LINK_UNSPEC,
++	SWITCH_LINK_FLAG_LINK,
++	SWITCH_LINK_FLAG_DUPLEX,
++	SWITCH_LINK_FLAG_ANEG,
++	SWITCH_LINK_FLAG_TX_FLOW,
++	SWITCH_LINK_FLAG_RX_FLOW,
++	SWITCH_LINK_SPEED,
++	SWITCH_LINK_FLAG_EEE_100BASET,
++	SWITCH_LINK_FLAG_EEE_1000BASET,
++	SWITCH_LINK_ATTR_MAX,
++};
++
++#define SWITCH_ATTR_DEFAULTS_OFFSET	0x1000
++
++
++#endif /* _UAPI_LINUX_SWITCH_H */
+Index: linux-4.1.11/drivers/net/phy/swconfig.c
+===================================================================
+--- /dev/null
++++ linux-4.1.11/drivers/net/phy/swconfig.c
+@@ -0,0 +1,1230 @@
++/*
++ * swconfig.c: Switch configuration API
++ *
++ * Copyright (C) 2008 Felix Fietkau <nbd@nbd.name>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/types.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/list.h>
++#include <linux/if.h>
++#include <linux/if_ether.h>
++#include <linux/capability.h>
++#include <linux/skbuff.h>
++#include <linux/switch.h>
++#include <linux/of.h>
++#include <linux/version.h>
++#include <uapi/linux/mii.h>
++
++#define SWCONFIG_DEVNAME	"switch%d"
++
++#include "swconfig_leds.c"
++
++MODULE_AUTHOR("Felix Fietkau <nbd@nbd.name>");
++MODULE_LICENSE("GPL");
++
++static int swdev_id;
++static struct list_head swdevs;
++static DEFINE_SPINLOCK(swdevs_lock);
++struct swconfig_callback;
++
++struct swconfig_callback {
++	struct sk_buff *msg;
++	struct genlmsghdr *hdr;
++	struct genl_info *info;
++	int cmd;
++
++	/* callback for filling in the message data */
++	int (*fill)(struct swconfig_callback *cb, void *arg);
++
++	/* callback for closing the message before sending it */
++	int (*close)(struct swconfig_callback *cb, void *arg);
++
++	struct nlattr *nest[4];
++	int args[4];
++};
++
++/* defaults */
++
++static int
++swconfig_get_vlan_ports(struct switch_dev *dev, const struct switch_attr *attr,
++			struct switch_val *val)
++{
++	int ret;
++	if (val->port_vlan >= dev->vlans)
++		return -EINVAL;
++
++	if (!dev->ops->get_vlan_ports)
++		return -EOPNOTSUPP;
++
++	ret = dev->ops->get_vlan_ports(dev, val);
++	return ret;
++}
++
++static int
++swconfig_set_vlan_ports(struct switch_dev *dev, const struct switch_attr *attr,
++			struct switch_val *val)
++{
++	struct switch_port *ports = val->value.ports;
++	const struct switch_dev_ops *ops = dev->ops;
++	int i;
++
++	if (val->port_vlan >= dev->vlans)
++		return -EINVAL;
++
++	/* validate ports */
++	if (val->len > dev->ports)
++		return -EINVAL;
++
++	if (!ops->set_vlan_ports)
++		return -EOPNOTSUPP;
++
++	for (i = 0; i < val->len; i++) {
++		if (ports[i].id >= dev->ports)
++			return -EINVAL;
++
++		if (ops->set_port_pvid &&
++		    !(ports[i].flags & (1 << SWITCH_PORT_FLAG_TAGGED)))
++			ops->set_port_pvid(dev, ports[i].id, val->port_vlan);
++	}
++
++	return ops->set_vlan_ports(dev, val);
++}
++
++static int
++swconfig_set_pvid(struct switch_dev *dev, const struct switch_attr *attr,
++			struct switch_val *val)
++{
++	if (val->port_vlan >= dev->ports)
++		return -EINVAL;
++
++	if (!dev->ops->set_port_pvid)
++		return -EOPNOTSUPP;
++
++	return dev->ops->set_port_pvid(dev, val->port_vlan, val->value.i);
++}
++
++static int
++swconfig_get_pvid(struct switch_dev *dev, const struct switch_attr *attr,
++			struct switch_val *val)
++{
++	if (val->port_vlan >= dev->ports)
++		return -EINVAL;
++
++	if (!dev->ops->get_port_pvid)
++		return -EOPNOTSUPP;
++
++	return dev->ops->get_port_pvid(dev, val->port_vlan, &val->value.i);
++}
++
++static int
++swconfig_set_link(struct switch_dev *dev, const struct switch_attr *attr,
++			struct switch_val *val)
++{
++	if (!dev->ops->set_port_link)
++		return -EOPNOTSUPP;
++
++	return dev->ops->set_port_link(dev, val->port_vlan, val->value.link);
++}
++
++static int
++swconfig_get_link(struct switch_dev *dev, const struct switch_attr *attr,
++			struct switch_val *val)
++{
++	struct switch_port_link *link = val->value.link;
++
++	if (val->port_vlan >= dev->ports)
++		return -EINVAL;
++
++	if (!dev->ops->get_port_link)
++		return -EOPNOTSUPP;
++
++	memset(link, 0, sizeof(*link));
++	return dev->ops->get_port_link(dev, val->port_vlan, link);
++}
++
++static int
++swconfig_apply_config(struct switch_dev *dev, const struct switch_attr *attr,
++			struct switch_val *val)
++{
++	/* don't complain if not supported by the switch driver */
++	if (!dev->ops->apply_config)
++		return 0;
++
++	return dev->ops->apply_config(dev);
++}
++
++static int
++swconfig_reset_switch(struct switch_dev *dev, const struct switch_attr *attr,
++			struct switch_val *val)
++{
++	/* don't complain if not supported by the switch driver */
++	if (!dev->ops->reset_switch)
++		return 0;
++
++	return dev->ops->reset_switch(dev);
++}
++
++enum global_defaults {
++	GLOBAL_APPLY,
++	GLOBAL_RESET,
++};
++
++enum vlan_defaults {
++	VLAN_PORTS,
++};
++
++enum port_defaults {
++	PORT_PVID,
++	PORT_LINK,
++};
++
++static struct switch_attr default_global[] = {
++	[GLOBAL_APPLY] = {
++		.type = SWITCH_TYPE_NOVAL,
++		.name = "apply",
++		.description = "Activate changes in the hardware",
++		.set = swconfig_apply_config,
++	},
++	[GLOBAL_RESET] = {
++		.type = SWITCH_TYPE_NOVAL,
++		.name = "reset",
++		.description = "Reset the switch",
++		.set = swconfig_reset_switch,
++	}
++};
++
++static struct switch_attr default_port[] = {
++	[PORT_PVID] = {
++		.type = SWITCH_TYPE_INT,
++		.name = "pvid",
++		.description = "Primary VLAN ID",
++		.set = swconfig_set_pvid,
++		.get = swconfig_get_pvid,
++	},
++	[PORT_LINK] = {
++		.type = SWITCH_TYPE_LINK,
++		.name = "link",
++		.description = "Get port link information",
++		.set = swconfig_set_link,
++		.get = swconfig_get_link,
++	}
++};
++
++static struct switch_attr default_vlan[] = {
++	[VLAN_PORTS] = {
++		.type = SWITCH_TYPE_PORTS,
++		.name = "ports",
++		.description = "VLAN port mapping",
++		.set = swconfig_set_vlan_ports,
++		.get = swconfig_get_vlan_ports,
++	},
++};
++
++static const struct switch_attr *
++swconfig_find_attr_by_name(const struct switch_attrlist *alist,
++				const char *name)
++{
++	int i;
++
++	for (i = 0; i < alist->n_attr; i++)
++		if (strcmp(name, alist->attr[i].name) == 0)
++			return &alist->attr[i];
++
++	return NULL;
++}
++
++static void swconfig_defaults_init(struct switch_dev *dev)
++{
++	const struct switch_dev_ops *ops = dev->ops;
++
++	dev->def_global = 0;
++	dev->def_vlan = 0;
++	dev->def_port = 0;
++
++	if (ops->get_vlan_ports || ops->set_vlan_ports)
++		set_bit(VLAN_PORTS, &dev->def_vlan);
++
++	if (ops->get_port_pvid || ops->set_port_pvid)
++		set_bit(PORT_PVID, &dev->def_port);
++
++	if (ops->get_port_link &&
++	    !swconfig_find_attr_by_name(&ops->attr_port, "link"))
++		set_bit(PORT_LINK, &dev->def_port);
++
++	/* always present, can be no-op */
++	set_bit(GLOBAL_APPLY, &dev->def_global);
++	set_bit(GLOBAL_RESET, &dev->def_global);
++}
++
++
++static struct genl_family switch_fam = {
++	.id = GENL_ID_GENERATE,
++	.name = "switch",
++	.hdrsize = 0,
++	.version = 1,
++	.maxattr = SWITCH_ATTR_MAX,
++};
++
++static const struct nla_policy switch_policy[SWITCH_ATTR_MAX+1] = {
++	[SWITCH_ATTR_ID] = { .type = NLA_U32 },
++	[SWITCH_ATTR_OP_ID] = { .type = NLA_U32 },
++	[SWITCH_ATTR_OP_PORT] = { .type = NLA_U32 },
++	[SWITCH_ATTR_OP_VLAN] = { .type = NLA_U32 },
++	[SWITCH_ATTR_OP_VALUE_INT] = { .type = NLA_U32 },
++	[SWITCH_ATTR_OP_VALUE_STR] = { .type = NLA_NUL_STRING },
++	[SWITCH_ATTR_OP_VALUE_PORTS] = { .type = NLA_NESTED },
++	[SWITCH_ATTR_TYPE] = { .type = NLA_U32 },
++};
++
++static const struct nla_policy port_policy[SWITCH_PORT_ATTR_MAX+1] = {
++	[SWITCH_PORT_ID] = { .type = NLA_U32 },
++	[SWITCH_PORT_FLAG_TAGGED] = { .type = NLA_FLAG },
++};
++
++static struct nla_policy link_policy[SWITCH_LINK_ATTR_MAX] = {
++	[SWITCH_LINK_FLAG_DUPLEX] = { .type = NLA_FLAG },
++	[SWITCH_LINK_FLAG_ANEG] = { .type = NLA_FLAG },
++	[SWITCH_LINK_SPEED] = { .type = NLA_U32 },
++};
++
++static inline void
++swconfig_lock(void)
++{
++	spin_lock(&swdevs_lock);
++}
++
++static inline void
++swconfig_unlock(void)
++{
++	spin_unlock(&swdevs_lock);
++}
++
++static struct switch_dev *
++swconfig_get_dev(struct genl_info *info)
++{
++	struct switch_dev *dev = NULL;
++	struct switch_dev *p;
++	int id;
++
++	if (!info->attrs[SWITCH_ATTR_ID])
++		goto done;
++
++	id = nla_get_u32(info->attrs[SWITCH_ATTR_ID]);
++	swconfig_lock();
++	list_for_each_entry(p, &swdevs, dev_list) {
++		if (id != p->id)
++			continue;
++
++		dev = p;
++		break;
++	}
++	if (dev)
++		mutex_lock(&dev->sw_mutex);
++	else
++		pr_debug("device %d not found\n", id);
++	swconfig_unlock();
++done:
++	return dev;
++}
++
++static inline void
++swconfig_put_dev(struct switch_dev *dev)
++{
++	mutex_unlock(&dev->sw_mutex);
++}
++
++static int
++swconfig_dump_attr(struct swconfig_callback *cb, void *arg)
++{
++	struct switch_attr *op = arg;
++	struct genl_info *info = cb->info;
++	struct sk_buff *msg = cb->msg;
++	int id = cb->args[0];
++	void *hdr;
++
++	hdr = genlmsg_put(msg, info->snd_portid, info->snd_seq, &switch_fam,
++			NLM_F_MULTI, SWITCH_CMD_NEW_ATTR);
++	if (IS_ERR(hdr))
++		return -1;
++
++	if (nla_put_u32(msg, SWITCH_ATTR_OP_ID, id))
++		goto nla_put_failure;
++	if (nla_put_u32(msg, SWITCH_ATTR_OP_TYPE, op->type))
++		goto nla_put_failure;
++	if (nla_put_string(msg, SWITCH_ATTR_OP_NAME, op->name))
++		goto nla_put_failure;
++	if (op->description)
++		if (nla_put_string(msg, SWITCH_ATTR_OP_DESCRIPTION,
++			op->description))
++			goto nla_put_failure;
++
++	genlmsg_end(msg, hdr);
++	return msg->len;
++nla_put_failure:
++	genlmsg_cancel(msg, hdr);
++	return -EMSGSIZE;
++}
++
++/* spread multipart messages across multiple message buffers */
++static int
++swconfig_send_multipart(struct swconfig_callback *cb, void *arg)
++{
++	struct genl_info *info = cb->info;
++	int restart = 0;
++	int err;
++
++	do {
++		if (!cb->msg) {
++			cb->msg = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
++			if (cb->msg == NULL)
++				goto error;
++		}
++
++		if (!(cb->fill(cb, arg) < 0))
++			break;
++
++		/* fill failed, check if this was already the second attempt */
++		if (restart)
++			goto error;
++
++		/* try again in a new message, send the current one */
++		restart = 1;
++		if (cb->close) {
++			if (cb->close(cb, arg) < 0)
++				goto error;
++		}
++		err = genlmsg_reply(cb->msg, info);
++		cb->msg = NULL;
++		if (err < 0)
++			goto error;
++
++	} while (restart);
++
++	return 0;
++
++error:
++	if (cb->msg)
++		nlmsg_free(cb->msg);
++	return -1;
++}
++
++static int
++swconfig_list_attrs(struct sk_buff *skb, struct genl_info *info)
++{
++	struct genlmsghdr *hdr = nlmsg_data(info->nlhdr);
++	const struct switch_attrlist *alist;
++	struct switch_dev *dev;
++	struct swconfig_callback cb;
++	int err = -EINVAL;
++	int i;
++
++	/* defaults */
++	struct switch_attr *def_list;
++	unsigned long *def_active;
++	int n_def;
++
++	dev = swconfig_get_dev(info);
++	if (!dev)
++		return -EINVAL;
++
++	switch (hdr->cmd) {
++	case SWITCH_CMD_LIST_GLOBAL:
++		alist = &dev->ops->attr_global;
++		def_list = default_global;
++		def_active = &dev->def_global;
++		n_def = ARRAY_SIZE(default_global);
++		break;
++	case SWITCH_CMD_LIST_VLAN:
++		alist = &dev->ops->attr_vlan;
++		def_list = default_vlan;
++		def_active = &dev->def_vlan;
++		n_def = ARRAY_SIZE(default_vlan);
++		break;
++	case SWITCH_CMD_LIST_PORT:
++		alist = &dev->ops->attr_port;
++		def_list = default_port;
++		def_active = &dev->def_port;
++		n_def = ARRAY_SIZE(default_port);
++		break;
++	default:
++		WARN_ON(1);
++		goto out;
++	}
++
++	memset(&cb, 0, sizeof(cb));
++	cb.info = info;
++	cb.fill = swconfig_dump_attr;
++	for (i = 0; i < alist->n_attr; i++) {
++		if (alist->attr[i].disabled)
++			continue;
++		cb.args[0] = i;
++		err = swconfig_send_multipart(&cb, (void *) &alist->attr[i]);
++		if (err < 0)
++			goto error;
++	}
++
++	/* defaults */
++	for (i = 0; i < n_def; i++) {
++		if (!test_bit(i, def_active))
++			continue;
++		cb.args[0] = SWITCH_ATTR_DEFAULTS_OFFSET + i;
++		err = swconfig_send_multipart(&cb, (void *) &def_list[i]);
++		if (err < 0)
++			goto error;
++	}
++	swconfig_put_dev(dev);
++
++	if (!cb.msg)
++		return 0;
++
++	return genlmsg_reply(cb.msg, info);
++
++error:
++	if (cb.msg)
++		nlmsg_free(cb.msg);
++out:
++	swconfig_put_dev(dev);
++	return err;
++}
++
++static const struct switch_attr *
++swconfig_lookup_attr(struct switch_dev *dev, struct genl_info *info,
++		struct switch_val *val)
++{
++	struct genlmsghdr *hdr = nlmsg_data(info->nlhdr);
++	const struct switch_attrlist *alist;
++	const struct switch_attr *attr = NULL;
++	int attr_id;
++
++	/* defaults */
++	struct switch_attr *def_list;
++	unsigned long *def_active;
++	int n_def;
++
++	if (!info->attrs[SWITCH_ATTR_OP_ID])
++		goto done;
++
++	switch (hdr->cmd) {
++	case SWITCH_CMD_SET_GLOBAL:
++	case SWITCH_CMD_GET_GLOBAL:
++		alist = &dev->ops->attr_global;
++		def_list = default_global;
++		def_active = &dev->def_global;
++		n_def = ARRAY_SIZE(default_global);
++		break;
++	case SWITCH_CMD_SET_VLAN:
++	case SWITCH_CMD_GET_VLAN:
++		alist = &dev->ops->attr_vlan;
++		def_list = default_vlan;
++		def_active = &dev->def_vlan;
++		n_def = ARRAY_SIZE(default_vlan);
++		if (!info->attrs[SWITCH_ATTR_OP_VLAN])
++			goto done;
++		val->port_vlan = nla_get_u32(info->attrs[SWITCH_ATTR_OP_VLAN]);
++		if (val->port_vlan >= dev->vlans)
++			goto done;
++		break;
++	case SWITCH_CMD_SET_PORT:
++	case SWITCH_CMD_GET_PORT:
++		alist = &dev->ops->attr_port;
++		def_list = default_port;
++		def_active = &dev->def_port;
++		n_def = ARRAY_SIZE(default_port);
++		if (!info->attrs[SWITCH_ATTR_OP_PORT])
++			goto done;
++		val->port_vlan = nla_get_u32(info->attrs[SWITCH_ATTR_OP_PORT]);
++		if (val->port_vlan >= dev->ports)
++			goto done;
++		break;
++	default:
++		WARN_ON(1);
++		goto done;
++	}
++
++	if (!alist)
++		goto done;
++
++	attr_id = nla_get_u32(info->attrs[SWITCH_ATTR_OP_ID]);
++	if (attr_id >= SWITCH_ATTR_DEFAULTS_OFFSET) {
++		attr_id -= SWITCH_ATTR_DEFAULTS_OFFSET;
++		if (attr_id >= n_def)
++			goto done;
++		if (!test_bit(attr_id, def_active))
++			goto done;
++		attr = &def_list[attr_id];
++	} else {
++		if (attr_id >= alist->n_attr)
++			goto done;
++		attr = &alist->attr[attr_id];
++	}
++
++	if (attr->disabled)
++		attr = NULL;
++
++done:
++	if (!attr)
++		pr_debug("attribute lookup failed\n");
++	val->attr = attr;
++	return attr;
++}
++
++static int
++swconfig_parse_ports(struct sk_buff *msg, struct nlattr *head,
++		struct switch_val *val, int max)
++{
++	struct nlattr *nla;
++	int rem;
++
++	val->len = 0;
++	nla_for_each_nested(nla, head, rem) {
++		struct nlattr *tb[SWITCH_PORT_ATTR_MAX+1];
++		struct switch_port *port = &val->value.ports[val->len];
++
++		if (val->len >= max)
++			return -EINVAL;
++
++		if (nla_parse_nested(tb, SWITCH_PORT_ATTR_MAX, nla,
++				port_policy))
++			return -EINVAL;
++
++		if (!tb[SWITCH_PORT_ID])
++			return -EINVAL;
++
++		port->id = nla_get_u32(tb[SWITCH_PORT_ID]);
++		if (tb[SWITCH_PORT_FLAG_TAGGED])
++			port->flags |= (1 << SWITCH_PORT_FLAG_TAGGED);
++		val->len++;
++	}
++
++	return 0;
++}
++
++static int
++swconfig_parse_link(struct sk_buff *msg, struct nlattr *nla,
++		    struct switch_port_link *link)
++{
++	struct nlattr *tb[SWITCH_LINK_ATTR_MAX + 1];
++
++	if (nla_parse_nested(tb, SWITCH_LINK_ATTR_MAX, nla, link_policy))
++		return -EINVAL;
++
++	link->duplex = !!tb[SWITCH_LINK_FLAG_DUPLEX];
++	link->aneg = !!tb[SWITCH_LINK_FLAG_ANEG];
++	link->speed = nla_get_u32(tb[SWITCH_LINK_SPEED]);
++
++	return 0;
++}
++
++static int
++swconfig_set_attr(struct sk_buff *skb, struct genl_info *info)
++{
++	const struct switch_attr *attr;
++	struct switch_dev *dev;
++	struct switch_val val;
++	int err = -EINVAL;
++
++	if (!capable(CAP_NET_ADMIN))
++		return -EPERM;
++
++	dev = swconfig_get_dev(info);
++	if (!dev)
++		return -EINVAL;
++
++	memset(&val, 0, sizeof(val));
++	attr = swconfig_lookup_attr(dev, info, &val);
++	if (!attr || !attr->set)
++		goto error;
++
++	val.attr = attr;
++	switch (attr->type) {
++	case SWITCH_TYPE_NOVAL:
++		break;
++	case SWITCH_TYPE_INT:
++		if (!info->attrs[SWITCH_ATTR_OP_VALUE_INT])
++			goto error;
++		val.value.i =
++			nla_get_u32(info->attrs[SWITCH_ATTR_OP_VALUE_INT]);
++		break;
++	case SWITCH_TYPE_STRING:
++		if (!info->attrs[SWITCH_ATTR_OP_VALUE_STR])
++			goto error;
++		val.value.s =
++			nla_data(info->attrs[SWITCH_ATTR_OP_VALUE_STR]);
++		break;
++	case SWITCH_TYPE_PORTS:
++		val.value.ports = dev->portbuf;
++		memset(dev->portbuf, 0,
++			sizeof(struct switch_port) * dev->ports);
++
++		/* TODO: implement multipart? */
++		if (info->attrs[SWITCH_ATTR_OP_VALUE_PORTS]) {
++			err = swconfig_parse_ports(skb,
++				info->attrs[SWITCH_ATTR_OP_VALUE_PORTS],
++				&val, dev->ports);
++			if (err < 0)
++				goto error;
++		} else {
++			val.len = 0;
++			err = 0;
++		}
++		break;
++	case SWITCH_TYPE_LINK:
++		val.value.link = &dev->linkbuf;
++		memset(&dev->linkbuf, 0, sizeof(struct switch_port_link));
++
++		if (info->attrs[SWITCH_ATTR_OP_VALUE_LINK]) {
++			err = swconfig_parse_link(skb,
++						  info->attrs[SWITCH_ATTR_OP_VALUE_LINK],
++						  val.value.link);
++			if (err < 0)
++				goto error;
++		} else {
++			val.len = 0;
++			err = 0;
++		}
++		break;
++	default:
++		goto error;
++	}
++
++	err = attr->set(dev, attr, &val);
++error:
++	swconfig_put_dev(dev);
++	return err;
++}
++
++static int
++swconfig_close_portlist(struct swconfig_callback *cb, void *arg)
++{
++	if (cb->nest[0])
++		nla_nest_end(cb->msg, cb->nest[0]);
++	return 0;
++}
++
++static int
++swconfig_send_port(struct swconfig_callback *cb, void *arg)
++{
++	const struct switch_port *port = arg;
++	struct nlattr *p = NULL;
++
++	if (!cb->nest[0]) {
++		cb->nest[0] = nla_nest_start(cb->msg, cb->cmd);
++		if (!cb->nest[0])
++			return -1;
++	}
++
++	p = nla_nest_start(cb->msg, SWITCH_ATTR_PORT);
++	if (!p)
++		goto error;
++
++	if (nla_put_u32(cb->msg, SWITCH_PORT_ID, port->id))
++		goto nla_put_failure;
++	if (port->flags & (1 << SWITCH_PORT_FLAG_TAGGED)) {
++		if (nla_put_flag(cb->msg, SWITCH_PORT_FLAG_TAGGED))
++			goto nla_put_failure;
++	}
++
++	nla_nest_end(cb->msg, p);
++	return 0;
++
++nla_put_failure:
++		nla_nest_cancel(cb->msg, p);
++error:
++	nla_nest_cancel(cb->msg, cb->nest[0]);
++	return -1;
++}
++
++static int
++swconfig_send_ports(struct sk_buff **msg, struct genl_info *info, int attr,
++		const struct switch_val *val)
++{
++	struct swconfig_callback cb;
++	int err = 0;
++	int i;
++
++	if (!val->value.ports)
++		return -EINVAL;
++
++	memset(&cb, 0, sizeof(cb));
++	cb.cmd = attr;
++	cb.msg = *msg;
++	cb.info = info;
++	cb.fill = swconfig_send_port;
++	cb.close = swconfig_close_portlist;
++
++	cb.nest[0] = nla_nest_start(cb.msg, cb.cmd);
++	for (i = 0; i < val->len; i++) {
++		err = swconfig_send_multipart(&cb, &val->value.ports[i]);
++		if (err)
++			goto done;
++	}
++	err = val->len;
++	swconfig_close_portlist(&cb, NULL);
++	*msg = cb.msg;
++
++done:
++	return err;
++}
++
++static int
++swconfig_send_link(struct sk_buff *msg, struct genl_info *info, int attr,
++		   const struct switch_port_link *link)
++{
++	struct nlattr *p = NULL;
++	int err = 0;
++
++	p = nla_nest_start(msg, attr);
++	if (link->link) {
++		if (nla_put_flag(msg, SWITCH_LINK_FLAG_LINK))
++			goto nla_put_failure;
++	}
++	if (link->duplex) {
++		if (nla_put_flag(msg, SWITCH_LINK_FLAG_DUPLEX))
++			goto nla_put_failure;
++	}
++	if (link->aneg) {
++		if (nla_put_flag(msg, SWITCH_LINK_FLAG_ANEG))
++			goto nla_put_failure;
++	}
++	if (link->tx_flow) {
++		if (nla_put_flag(msg, SWITCH_LINK_FLAG_TX_FLOW))
++			goto nla_put_failure;
++	}
++	if (link->rx_flow) {
++		if (nla_put_flag(msg, SWITCH_LINK_FLAG_RX_FLOW))
++			goto nla_put_failure;
++	}
++	if (nla_put_u32(msg, SWITCH_LINK_SPEED, link->speed))
++		goto nla_put_failure;
++	if (link->eee & ADVERTISED_100baseT_Full) {
++		if (nla_put_flag(msg, SWITCH_LINK_FLAG_EEE_100BASET))
++			goto nla_put_failure;
++	}
++	if (link->eee & ADVERTISED_1000baseT_Full) {
++		if (nla_put_flag(msg, SWITCH_LINK_FLAG_EEE_1000BASET))
++			goto nla_put_failure;
++	}
++	nla_nest_end(msg, p);
++
++	return err;
++
++nla_put_failure:
++	nla_nest_cancel(msg, p);
++	return -1;
++}
++
++static int
++swconfig_get_attr(struct sk_buff *skb, struct genl_info *info)
++{
++	struct genlmsghdr *hdr = nlmsg_data(info->nlhdr);
++	const struct switch_attr *attr;
++	struct switch_dev *dev;
++	struct sk_buff *msg = NULL;
++	struct switch_val val;
++	int err = -EINVAL;
++	int cmd = hdr->cmd;
++
++	dev = swconfig_get_dev(info);
++	if (!dev)
++		return -EINVAL;
++
++	memset(&val, 0, sizeof(val));
++	attr = swconfig_lookup_attr(dev, info, &val);
++	if (!attr || !attr->get)
++		goto error;
++
++	if (attr->type == SWITCH_TYPE_PORTS) {
++		val.value.ports = dev->portbuf;
++		memset(dev->portbuf, 0,
++			sizeof(struct switch_port) * dev->ports);
++	} else if (attr->type == SWITCH_TYPE_LINK) {
++		val.value.link = &dev->linkbuf;
++		memset(&dev->linkbuf, 0, sizeof(struct switch_port_link));
++	}
++
++	err = attr->get(dev, attr, &val);
++	if (err)
++		goto error;
++
++	msg = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
++	if (!msg)
++		goto error;
++
++	hdr = genlmsg_put(msg, info->snd_portid, info->snd_seq, &switch_fam,
++			0, cmd);
++	if (IS_ERR(hdr))
++		goto nla_put_failure;
++
++	switch (attr->type) {
++	case SWITCH_TYPE_INT:
++		if (nla_put_u32(msg, SWITCH_ATTR_OP_VALUE_INT, val.value.i))
++			goto nla_put_failure;
++		break;
++	case SWITCH_TYPE_STRING:
++		if (nla_put_string(msg, SWITCH_ATTR_OP_VALUE_STR, val.value.s))
++			goto nla_put_failure;
++		break;
++	case SWITCH_TYPE_PORTS:
++		err = swconfig_send_ports(&msg, info,
++				SWITCH_ATTR_OP_VALUE_PORTS, &val);
++		if (err < 0)
++			goto nla_put_failure;
++		break;
++	case SWITCH_TYPE_LINK:
++		err = swconfig_send_link(msg, info,
++					 SWITCH_ATTR_OP_VALUE_LINK, val.value.link);
++		if (err < 0)
++			goto nla_put_failure;
++		break;
++	default:
++		pr_debug("invalid type in attribute\n");
++		err = -EINVAL;
++		goto error;
++	}
++	genlmsg_end(msg, hdr);
++	err = msg->len;
++	if (err < 0)
++		goto nla_put_failure;
++
++	swconfig_put_dev(dev);
++	return genlmsg_reply(msg, info);
++
++nla_put_failure:
++	if (msg)
++		nlmsg_free(msg);
++error:
++	swconfig_put_dev(dev);
++	if (!err)
++		err = -ENOMEM;
++	return err;
++}
++
++static int
++swconfig_send_switch(struct sk_buff *msg, u32 pid, u32 seq, int flags,
++		const struct switch_dev *dev)
++{
++	struct nlattr *p = NULL, *m = NULL;
++	void *hdr;
++	int i;
++
++	hdr = genlmsg_put(msg, pid, seq, &switch_fam, flags,
++			SWITCH_CMD_NEW_ATTR);
++	if (IS_ERR(hdr))
++		return -1;
++
++	if (nla_put_u32(msg, SWITCH_ATTR_ID, dev->id))
++		goto nla_put_failure;
++	if (nla_put_string(msg, SWITCH_ATTR_DEV_NAME, dev->devname))
++		goto nla_put_failure;
++	if (nla_put_string(msg, SWITCH_ATTR_ALIAS, dev->alias))
++		goto nla_put_failure;
++	if (nla_put_string(msg, SWITCH_ATTR_NAME, dev->name))
++		goto nla_put_failure;
++	if (nla_put_u32(msg, SWITCH_ATTR_VLANS, dev->vlans))
++		goto nla_put_failure;
++	if (nla_put_u32(msg, SWITCH_ATTR_PORTS, dev->ports))
++		goto nla_put_failure;
++	if (nla_put_u32(msg, SWITCH_ATTR_CPU_PORT, dev->cpu_port))
++		goto nla_put_failure;
++
++	m = nla_nest_start(msg, SWITCH_ATTR_PORTMAP);
++	if (!m)
++		goto nla_put_failure;
++	for (i = 0; i < dev->ports; i++) {
++		p = nla_nest_start(msg, SWITCH_ATTR_PORTS);
++		if (!p)
++			continue;
++		if (dev->portmap[i].s) {
++			if (nla_put_string(msg, SWITCH_PORTMAP_SEGMENT,
++						dev->portmap[i].s))
++				goto nla_put_failure;
++			if (nla_put_u32(msg, SWITCH_PORTMAP_VIRT,
++						dev->portmap[i].virt))
++				goto nla_put_failure;
++		}
++		nla_nest_end(msg, p);
++	}
++	nla_nest_end(msg, m);
++	genlmsg_end(msg, hdr);
++	return msg->len;
++nla_put_failure:
++	genlmsg_cancel(msg, hdr);
++	return -EMSGSIZE;
++}
++
++static int swconfig_dump_switches(struct sk_buff *skb,
++		struct netlink_callback *cb)
++{
++	struct switch_dev *dev;
++	int start = cb->args[0];
++	int idx = 0;
++
++	swconfig_lock();
++	list_for_each_entry(dev, &swdevs, dev_list) {
++		if (++idx <= start)
++			continue;
++		if (swconfig_send_switch(skb, NETLINK_CB(cb->skb).portid,
++				cb->nlh->nlmsg_seq, NLM_F_MULTI,
++				dev) < 0)
++			break;
++	}
++	swconfig_unlock();
++	cb->args[0] = idx;
++
++	return skb->len;
++}
++
++static int
++swconfig_done(struct netlink_callback *cb)
++{
++	return 0;
++}
++
++static struct genl_ops swconfig_ops[] = {
++	{
++		.cmd = SWITCH_CMD_LIST_GLOBAL,
++		.doit = swconfig_list_attrs,
++		.policy = switch_policy,
++	},
++	{
++		.cmd = SWITCH_CMD_LIST_VLAN,
++		.doit = swconfig_list_attrs,
++		.policy = switch_policy,
++	},
++	{
++		.cmd = SWITCH_CMD_LIST_PORT,
++		.doit = swconfig_list_attrs,
++		.policy = switch_policy,
++	},
++	{
++		.cmd = SWITCH_CMD_GET_GLOBAL,
++		.doit = swconfig_get_attr,
++		.policy = switch_policy,
++	},
++	{
++		.cmd = SWITCH_CMD_GET_VLAN,
++		.doit = swconfig_get_attr,
++		.policy = switch_policy,
++	},
++	{
++		.cmd = SWITCH_CMD_GET_PORT,
++		.doit = swconfig_get_attr,
++		.policy = switch_policy,
++	},
++	{
++		.cmd = SWITCH_CMD_SET_GLOBAL,
++		.flags = GENL_ADMIN_PERM,
++		.doit = swconfig_set_attr,
++		.policy = switch_policy,
++	},
++	{
++		.cmd = SWITCH_CMD_SET_VLAN,
++		.flags = GENL_ADMIN_PERM,
++		.doit = swconfig_set_attr,
++		.policy = switch_policy,
++	},
++	{
++		.cmd = SWITCH_CMD_SET_PORT,
++		.flags = GENL_ADMIN_PERM,
++		.doit = swconfig_set_attr,
++		.policy = switch_policy,
++	},
++	{
++		.cmd = SWITCH_CMD_GET_SWITCH,
++		.dumpit = swconfig_dump_switches,
++		.policy = switch_policy,
++		.done = swconfig_done,
++	}
++};
++
++#ifdef CONFIG_OF
++void
++of_switch_load_portmap(struct switch_dev *dev)
++{
++	struct device_node *port;
++
++	if (!dev->of_node)
++		return;
++
++	for_each_child_of_node(dev->of_node, port) {
++		const __be32 *prop;
++		const char *segment;
++		int size, phys;
++
++		if (!of_device_is_compatible(port, "swconfig,port"))
++			continue;
++
++		if (of_property_read_string(port, "swconfig,segment", &segment))
++			continue;
++
++		prop = of_get_property(port, "swconfig,portmap", &size);
++		if (!prop)
++			continue;
++
++		if (size != (2 * sizeof(*prop))) {
++			pr_err("%s: failed to parse port mapping\n",
++					port->name);
++			continue;
++		}
++
++		phys = be32_to_cpup(prop++);
++		if ((phys < 0) | (phys >= dev->ports)) {
++			pr_err("%s: physical port index out of range\n",
++					port->name);
++			continue;
++		}
++
++		dev->portmap[phys].s = kstrdup(segment, GFP_KERNEL);
++		dev->portmap[phys].virt = be32_to_cpup(prop);
++		pr_debug("Found port: %s, physical: %d, virtual: %d\n",
++			segment, phys, dev->portmap[phys].virt);
++	}
++}
++#endif
++
++int
++register_switch(struct switch_dev *dev, struct net_device *netdev)
++{
++	struct switch_dev *sdev;
++	const int max_switches = 8 * sizeof(unsigned long);
++	unsigned long in_use = 0;
++	int err;
++	int i;
++
++	INIT_LIST_HEAD(&dev->dev_list);
++	if (netdev) {
++		dev->netdev = netdev;
++		if (!dev->alias)
++			dev->alias = netdev->name;
++	}
++	BUG_ON(!dev->alias);
++
++	if (dev->ports > 0) {
++		dev->portbuf = kzalloc(sizeof(struct switch_port) *
++				dev->ports, GFP_KERNEL);
++		if (!dev->portbuf)
++			return -ENOMEM;
++		dev->portmap = kzalloc(sizeof(struct switch_portmap) *
++				dev->ports, GFP_KERNEL);
++		if (!dev->portmap) {
++			kfree(dev->portbuf);
++			return -ENOMEM;
++		}
++	}
++	swconfig_defaults_init(dev);
++	mutex_init(&dev->sw_mutex);
++	swconfig_lock();
++	dev->id = ++swdev_id;
++
++	list_for_each_entry(sdev, &swdevs, dev_list) {
++		if (!sscanf(sdev->devname, SWCONFIG_DEVNAME, &i))
++			continue;
++		if (i < 0 || i > max_switches)
++			continue;
++
++		set_bit(i, &in_use);
++	}
++	i = find_first_zero_bit(&in_use, max_switches);
++
++	if (i == max_switches) {
++		swconfig_unlock();
++		return -ENFILE;
++	}
++
++#ifdef CONFIG_OF
++	if (dev->ports)
++		of_switch_load_portmap(dev);
++#endif
++
++	/* fill device name */
++	snprintf(dev->devname, IFNAMSIZ, SWCONFIG_DEVNAME, i);
++
++	list_add_tail(&dev->dev_list, &swdevs);
++	swconfig_unlock();
++
++	err = swconfig_create_led_trigger(dev);
++	if (err)
++		return err;
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(register_switch);
++
++void
++unregister_switch(struct switch_dev *dev)
++{
++	swconfig_destroy_led_trigger(dev);
++	kfree(dev->portbuf);
++	mutex_lock(&dev->sw_mutex);
++	swconfig_lock();
++	list_del(&dev->dev_list);
++	swconfig_unlock();
++	mutex_unlock(&dev->sw_mutex);
++}
++EXPORT_SYMBOL_GPL(unregister_switch);
++
++int
++switch_generic_set_link(struct switch_dev *dev, int port,
++			struct switch_port_link *link)
++{
++	if (WARN_ON(!dev->ops->phy_write16))
++		return -ENOTSUPP;
++
++	/* Generic implementation */
++	if (link->aneg) {
++		dev->ops->phy_write16(dev, port, MII_BMCR, 0x0000);
++		dev->ops->phy_write16(dev, port, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
++	} else {
++		u16 bmcr = 0;
++
++		if (link->duplex)
++			bmcr |= BMCR_FULLDPLX;
++
++		switch (link->speed) {
++		case SWITCH_PORT_SPEED_10:
++			break;
++		case SWITCH_PORT_SPEED_100:
++			bmcr |= BMCR_SPEED100;
++			break;
++		case SWITCH_PORT_SPEED_1000:
++			bmcr |= BMCR_SPEED1000;
++			break;
++		default:
++			return -ENOTSUPP;
++		}
++
++		dev->ops->phy_write16(dev, port, MII_BMCR, bmcr);
++	}
++
++	return 0;
++}
++
++static int __init
++swconfig_init(void)
++{
++	INIT_LIST_HEAD(&swdevs);
++	
++	return genl_register_family_with_ops(&switch_fam, swconfig_ops);
++}
++
++static void __exit
++swconfig_exit(void)
++{
++	genl_unregister_family(&switch_fam);
++}
++
++module_init(swconfig_init);
++module_exit(swconfig_exit);
++
+Index: linux-4.1.11/include/uapi/linux/Kbuild
+===================================================================
+--- linux-4.1.11.orig/include/uapi/linux/Kbuild
++++ linux-4.1.11/include/uapi/linux/Kbuild
+@@ -380,6 +380,7 @@ header-y += stddef.h
+ header-y += string.h
+ header-y += suspend_ioctls.h
+ header-y += swab.h
++header-y += switch.h
+ header-y += synclink.h
+ header-y += sysctl.h
+ header-y += sysinfo.h
+Index: linux-4.1.11/drivers/net/phy/swconfig_leds.c
+===================================================================
+--- /dev/null
++++ linux-4.1.11/drivers/net/phy/swconfig_leds.c
+@@ -0,0 +1,439 @@
++/*
++ * swconfig_led.c: LED trigger support for the switch configuration API
++ *
++ * Copyright (C) 2011 Gabor Juhos <juhosg@openwrt.org>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ */
++
++#ifdef CONFIG_SWCONFIG_LEDS
++
++#include <linux/leds.h>
++#include <linux/ctype.h>
++#include <linux/device.h>
++#include <linux/workqueue.h>
++
++#define SWCONFIG_LED_TIMER_INTERVAL	(HZ / 10)
++#define SWCONFIG_LED_NUM_PORTS		32
++
++#define SWCONFIG_LED_PORT_SPEED_NA	0x01	/* unknown speed */
++#define SWCONFIG_LED_PORT_SPEED_10	0x02	/* 10 Mbps */
++#define SWCONFIG_LED_PORT_SPEED_100	0x04	/* 100 Mbps */
++#define SWCONFIG_LED_PORT_SPEED_1000	0x08	/* 1000 Mbps */
++#define SWCONFIG_LED_PORT_SPEED_ALL	(SWCONFIG_LED_PORT_SPEED_NA | \
++					 SWCONFIG_LED_PORT_SPEED_10 | \
++					 SWCONFIG_LED_PORT_SPEED_100 | \
++					 SWCONFIG_LED_PORT_SPEED_1000)
++
++struct switch_led_trigger {
++	struct led_trigger trig;
++	struct switch_dev *swdev;
++
++	struct delayed_work sw_led_work;
++	u32 port_mask;
++	u32 port_link;
++	unsigned long port_traffic[SWCONFIG_LED_NUM_PORTS];
++	u8 link_speed[SWCONFIG_LED_NUM_PORTS];
++};
++
++struct swconfig_trig_data {
++	struct led_classdev *led_cdev;
++	struct switch_dev *swdev;
++
++	rwlock_t lock;
++	u32 port_mask;
++
++	bool prev_link;
++	unsigned long prev_traffic;
++	enum led_brightness prev_brightness;
++	u8 speed_mask;
++};
++
++static void
++swconfig_trig_set_brightness(struct swconfig_trig_data *trig_data,
++			     enum led_brightness brightness)
++{
++	led_set_brightness(trig_data->led_cdev, brightness);
++	trig_data->prev_brightness = brightness;
++}
++
++static void
++swconfig_trig_update_port_mask(struct led_trigger *trigger)
++{
++	struct list_head *entry;
++	struct switch_led_trigger *sw_trig;
++	u32 port_mask;
++
++	if (!trigger)
++		return;
++
++	sw_trig = (void *) trigger;
++
++	port_mask = 0;
++	read_lock(&trigger->leddev_list_lock);
++	list_for_each(entry, &trigger->led_cdevs) {
++		struct led_classdev *led_cdev;
++		struct swconfig_trig_data *trig_data;
++
++		led_cdev = list_entry(entry, struct led_classdev, trig_list);
++		trig_data = led_cdev->trigger_data;
++		if (trig_data) {
++			read_lock(&trig_data->lock);
++			port_mask |= trig_data->port_mask;
++			read_unlock(&trig_data->lock);
++		}
++	}
++	read_unlock(&trigger->leddev_list_lock);
++
++	sw_trig->port_mask = port_mask;
++
++	if (port_mask)
++		schedule_delayed_work(&sw_trig->sw_led_work,
++				      SWCONFIG_LED_TIMER_INTERVAL);
++	else
++		cancel_delayed_work_sync(&sw_trig->sw_led_work);
++}
++
++static ssize_t
++swconfig_trig_port_mask_store(struct device *dev, struct device_attribute *attr,
++			      const char *buf, size_t size)
++{
++	struct led_classdev *led_cdev = dev_get_drvdata(dev);
++	struct swconfig_trig_data *trig_data = led_cdev->trigger_data;
++	unsigned long port_mask;
++	int ret;
++	bool changed;
++
++	ret = kstrtoul(buf, 0, &port_mask);
++	if (ret)
++		return ret;
++
++	write_lock(&trig_data->lock);
++
++	changed = (trig_data->port_mask != port_mask);
++	if (changed) {
++		trig_data->port_mask = port_mask;
++		if (port_mask == 0)
++			swconfig_trig_set_brightness(trig_data, LED_OFF);
++	}
++
++	write_unlock(&trig_data->lock);
++
++	if (changed)
++		swconfig_trig_update_port_mask(led_cdev->trigger);
++
++	return size;
++}
++
++static ssize_t
++swconfig_trig_port_mask_show(struct device *dev, struct device_attribute *attr,
++			     char *buf)
++{
++	struct led_classdev *led_cdev = dev_get_drvdata(dev);
++	struct swconfig_trig_data *trig_data = led_cdev->trigger_data;
++
++	read_lock(&trig_data->lock);
++	sprintf(buf, "%#x\n", trig_data->port_mask);
++	read_unlock(&trig_data->lock);
++
++	return strlen(buf) + 1;
++}
++
++static DEVICE_ATTR(port_mask, 0644, swconfig_trig_port_mask_show,
++		   swconfig_trig_port_mask_store);
++
++/* speed_mask file handler - display value */
++static ssize_t swconfig_trig_speed_mask_show(struct device *dev,
++					     struct device_attribute *attr,
++					     char *buf)
++{
++	struct led_classdev *led_cdev = dev_get_drvdata(dev);
++	struct swconfig_trig_data *trig_data = led_cdev->trigger_data;
++
++	read_lock(&trig_data->lock);
++	sprintf(buf, "%#x\n", trig_data->speed_mask);
++	read_unlock(&trig_data->lock);
++
++	return strlen(buf) + 1;
++}
++
++/* speed_mask file handler - store value */
++static ssize_t swconfig_trig_speed_mask_store(struct device *dev,
++					      struct device_attribute *attr,
++					      const char *buf, size_t size)
++{
++	struct led_classdev *led_cdev = dev_get_drvdata(dev);
++	struct swconfig_trig_data *trig_data = led_cdev->trigger_data;
++	u8 speed_mask;
++	int ret;
++
++	ret = kstrtou8(buf, 0, &speed_mask);
++	if (ret)
++		return ret;
++
++	write_lock(&trig_data->lock);
++	trig_data->speed_mask = speed_mask & SWCONFIG_LED_PORT_SPEED_ALL;
++	write_unlock(&trig_data->lock);
++
++	return size;
++}
++
++/* speed_mask special file */
++static DEVICE_ATTR(speed_mask, 0644, swconfig_trig_speed_mask_show,
++		   swconfig_trig_speed_mask_store);
++
++static void
++swconfig_trig_activate(struct led_classdev *led_cdev)
++{
++	struct switch_led_trigger *sw_trig;
++	struct swconfig_trig_data *trig_data;
++	int err;
++
++	if (led_cdev->trigger->activate != swconfig_trig_activate)
++		return;
++
++	trig_data = kzalloc(sizeof(struct swconfig_trig_data), GFP_KERNEL);
++	if (!trig_data)
++		return;
++
++	sw_trig = (void *) led_cdev->trigger;
++
++	rwlock_init(&trig_data->lock);
++	trig_data->led_cdev = led_cdev;
++	trig_data->swdev = sw_trig->swdev;
++	trig_data->speed_mask = SWCONFIG_LED_PORT_SPEED_ALL;
++	led_cdev->trigger_data = trig_data;
++
++	err = device_create_file(led_cdev->dev, &dev_attr_port_mask);
++	if (err)
++		goto err_free;
++
++	err = device_create_file(led_cdev->dev, &dev_attr_speed_mask);
++	if (err)
++		goto err_dev_free;
++
++	return;
++
++err_dev_free:
++	device_remove_file(led_cdev->dev, &dev_attr_port_mask);
++
++err_free:
++	led_cdev->trigger_data = NULL;
++	kfree(trig_data);
++}
++
++static void
++swconfig_trig_deactivate(struct led_classdev *led_cdev)
++{
++	struct swconfig_trig_data *trig_data;
++
++	swconfig_trig_update_port_mask(led_cdev->trigger);
++
++	trig_data = (void *) led_cdev->trigger_data;
++	if (trig_data) {
++		device_remove_file(led_cdev->dev, &dev_attr_port_mask);
++		device_remove_file(led_cdev->dev, &dev_attr_speed_mask);
++		kfree(trig_data);
++	}
++}
++
++static void
++swconfig_trig_led_event(struct switch_led_trigger *sw_trig,
++			struct led_classdev *led_cdev)
++{
++	struct swconfig_trig_data *trig_data;
++	u32 port_mask;
++	bool link;
++	u8 speed_mask;
++
++	trig_data = led_cdev->trigger_data;
++	if (!trig_data)
++		return;
++
++	read_lock(&trig_data->lock);
++	port_mask = trig_data->port_mask;
++	speed_mask = trig_data->speed_mask;
++	read_unlock(&trig_data->lock);
++
++	link = !!(sw_trig->port_link & port_mask);
++	if (!link) {
++		if (link != trig_data->prev_link)
++			swconfig_trig_set_brightness(trig_data, LED_OFF);
++	} else {
++		unsigned long traffic;
++		int speedok;	/* link speed flag */
++		int i;
++
++		traffic = 0;
++		speedok = 0;
++		for (i = 0; i < SWCONFIG_LED_NUM_PORTS; i++) {
++			if (port_mask & (1 << i))
++				if (sw_trig->link_speed[i] & speed_mask) {
++					traffic += sw_trig->port_traffic[i];
++					speedok = 1;
++				}
++		}
++
++		if (speedok) {
++			/* At least one port speed matches speed_mask */
++			if (trig_data->prev_brightness != LED_FULL)
++				swconfig_trig_set_brightness(trig_data,
++							     LED_FULL);
++			else if (traffic != trig_data->prev_traffic)
++				swconfig_trig_set_brightness(trig_data,
++							     LED_OFF);
++		} else if (trig_data->prev_brightness != LED_OFF)
++			swconfig_trig_set_brightness(trig_data, LED_OFF);
++
++		trig_data->prev_traffic = traffic;
++	}
++
++	trig_data->prev_link = link;
++}
++
++static void
++swconfig_trig_update_leds(struct switch_led_trigger *sw_trig)
++{
++	struct list_head *entry;
++	struct led_trigger *trigger;
++
++	trigger = &sw_trig->trig;
++	read_lock(&trigger->leddev_list_lock);
++	list_for_each(entry, &trigger->led_cdevs) {
++		struct led_classdev *led_cdev;
++
++		led_cdev = list_entry(entry, struct led_classdev, trig_list);
++		swconfig_trig_led_event(sw_trig, led_cdev);
++	}
++	read_unlock(&trigger->leddev_list_lock);
++}
++
++static void
++swconfig_led_work_func(struct work_struct *work)
++{
++	struct switch_led_trigger *sw_trig;
++	struct switch_dev *swdev;
++	u32 port_mask;
++	u32 link;
++	int i;
++
++	sw_trig = container_of(work, struct switch_led_trigger,
++			       sw_led_work.work);
++
++	port_mask = sw_trig->port_mask;
++	swdev = sw_trig->swdev;
++
++	link = 0;
++	for (i = 0; i < SWCONFIG_LED_NUM_PORTS; i++) {
++		u32 port_bit;
++
++		sw_trig->link_speed[i] = 0;
++
++		port_bit = BIT(i);
++		if ((port_mask & port_bit) == 0)
++			continue;
++
++		if (swdev->ops->get_port_link) {
++			struct switch_port_link port_link;
++
++			memset(&port_link, '\0', sizeof(port_link));
++			swdev->ops->get_port_link(swdev, i, &port_link);
++
++			if (port_link.link) {
++				link |= port_bit;
++				switch (port_link.speed) {
++				case SWITCH_PORT_SPEED_UNKNOWN:
++					sw_trig->link_speed[i] =
++						SWCONFIG_LED_PORT_SPEED_NA;
++					break;
++				case SWITCH_PORT_SPEED_10:
++					sw_trig->link_speed[i] =
++						SWCONFIG_LED_PORT_SPEED_10;
++					break;
++				case SWITCH_PORT_SPEED_100:
++					sw_trig->link_speed[i] =
++						SWCONFIG_LED_PORT_SPEED_100;
++					break;
++				case SWITCH_PORT_SPEED_1000:
++					sw_trig->link_speed[i] =
++						SWCONFIG_LED_PORT_SPEED_1000;
++					break;
++				}
++			}
++		}
++
++		if (swdev->ops->get_port_stats) {
++			struct switch_port_stats port_stats;
++
++			memset(&port_stats, '\0', sizeof(port_stats));
++			swdev->ops->get_port_stats(swdev, i, &port_stats);
++			sw_trig->port_traffic[i] = port_stats.tx_bytes +
++						   port_stats.rx_bytes;
++		}
++	}
++
++	sw_trig->port_link = link;
++
++	swconfig_trig_update_leds(sw_trig);
++
++	schedule_delayed_work(&sw_trig->sw_led_work,
++			      SWCONFIG_LED_TIMER_INTERVAL);
++}
++
++static int
++swconfig_create_led_trigger(struct switch_dev *swdev)
++{
++	struct switch_led_trigger *sw_trig;
++	int err;
++
++	if (!swdev->ops->get_port_link)
++		return 0;
++
++	sw_trig = kzalloc(sizeof(struct switch_led_trigger), GFP_KERNEL);
++	if (!sw_trig)
++		return -ENOMEM;
++
++	sw_trig->swdev = swdev;
++	sw_trig->trig.name = swdev->devname;
++	sw_trig->trig.activate = swconfig_trig_activate;
++	sw_trig->trig.deactivate = swconfig_trig_deactivate;
++
++	INIT_DELAYED_WORK(&sw_trig->sw_led_work, swconfig_led_work_func);
++
++	err = led_trigger_register(&sw_trig->trig);
++	if (err)
++		goto err_free;
++
++	swdev->led_trigger = sw_trig;
++
++	return 0;
++
++err_free:
++	kfree(sw_trig);
++	return err;
++}
++
++static void
++swconfig_destroy_led_trigger(struct switch_dev *swdev)
++{
++	struct switch_led_trigger *sw_trig;
++
++	sw_trig = swdev->led_trigger;
++	if (sw_trig) {
++		cancel_delayed_work_sync(&sw_trig->sw_led_work);
++		led_trigger_unregister(&sw_trig->trig);
++		kfree(sw_trig);
++	}
++}
++
++#else /* SWCONFIG_LEDS */
++static inline int
++swconfig_create_led_trigger(struct switch_dev *swdev) { return 0; }
++
++static inline void
++swconfig_destroy_led_trigger(struct switch_dev *swdev) { }
++#endif /* CONFIG_SWCONFIG_LEDS */

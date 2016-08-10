@@ -24,3 +24,5 @@ src
 # Build artifacts
 *.bin
 last_session
+vmlinux
+vmlinux.bin

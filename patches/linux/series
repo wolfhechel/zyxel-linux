@@ -12,3 +12,4 @@
 925-actiontec_leds.patch
 950-cpmac_titan.patch
 955-zyxel-big-endian.patch
+960-adm6996.patch
