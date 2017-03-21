@@ -1,0 +1,17 @@
+Index: linux-4.1.38/drivers/tty/serial/8250/8250_core.c
+===================================================================
+--- linux-4.1.38.orig/drivers/tty/serial/8250/8250_core.c
++++ linux-4.1.38/drivers/tty/serial/8250/8250_core.c
+@@ -252,10 +252,8 @@ static const struct serial8250_config ua
+ 	},
+ 	[PORT_AR7] = {
+ 		.name		= "AR7",
+-		.fifo_size	= 16,
+-		.tx_loadsz	= 16,
+-		.fcr		= UART_FCR_ENABLE_FIFO | UART_FCR_R_TRIG_00,
+-		.flags		= UART_CAP_FIFO | UART_CAP_AFE,
++		.fifo_size	= 1,
++		.tx_loadsz	= 1,
+ 	},
+ 	[PORT_U6_16550A] = {
+ 		.name		= "U6_16550A",

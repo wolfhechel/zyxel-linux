@@ -1,12 +1,10 @@
-#!/bin/busybox sh
+#!/bin/sh
 
-/bin/busybox echo "Testing"
+mount -t proc none /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
 
-/bin/busybox --install -s
+echo "Booted!"
 
-echo "Testing"
-
-mount -t procfs none /proc
-mount -t sysfs none /sys
-
+/bin/setsid /bin/cttyhack /bin/sh
 exec /bin/sh

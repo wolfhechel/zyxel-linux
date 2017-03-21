@@ -1,0 +1,7 @@
+001-mips-ar7-fix-serial.patch
+100-fix-highmem-offset.patch
+160-vlynq_try_remote_first.patch
+200-free-mem-below-kernel-offset.patch
+955-zyxel-big-endian.patch
+200-serial-disable-port-ar7-fifo.patch
+960-cpmac-big-endian.patch

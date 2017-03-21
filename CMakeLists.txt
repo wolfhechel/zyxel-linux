@@ -1,64 +1,114 @@
-cmake_minimum_required (VERSION 2.8.11)
-project (ZyNIX)
+cmake_minimum_required(VERSION 3.7)
 
-include(ExternalProject)
+include (ExternalProject)
 
-set (CROSS_TRIPLET mips-unknown-linux-uclibc)
-set (CROSS_COMPILE /home/vagrant/x-tools/${CROSS_TRIPLET}/bin/${CROSS_TRIPLET}-)
+set (CROSS_COMPILE "" CACHE STRING "Cross compile prefix")
 
-set (ARCH mips)
+if (CROSS_COMPILE STREQUAL "")
+    message (FATAL_ERROR "CROSS_COMPILE not set")
+endif (CROSS_COMPILE STREQUAL "")
 
-set (SOURCE_CACHE ${PROJECT_BINARY_DIR}/sources)
+set (INITRAMFS ${CMAKE_CURRENT_BINARY_DIR}/initramfs)
 
-file (MAKE_DIRECTORY ${SOURCE_CACHE})
+set (CONFIG_INITRAMFS_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/initramfs.cpio.gz")
 
-file (
-    COPY ${PROJECT_SOURCE_DIR}/initramfs/initramfs.txt
-    DESTINATION ${PROJECT_BINARY_DIR}
+configure_file (
+    ${CMAKE_CURRENT_SOURCE_DIR}/initramfs/init.sh
+    ${CMAKE_CURRENT_BINARY_DIR}/init
 )
 
-file (APPEND ${PROJECT_BINARY_DIR}/initramfs.txt "file /bin/busybox ${PROJECT_BINARY_DIR}/bin/busybox 0755 0 0\n")
-file (APPEND ${PROJECT_BINARY_DIR}/initramfs.txt "file /init ${PROJECT_SOURCE_DIR}/initramfs/init.sh 0755 0 0\n")
-
+configure_file (
+    ${CMAKE_CURRENT_SOURCE_DIR}/configs/linux-4.1.38.in
+    ${CMAKE_CURRENT_BINARY_DIR}/linux-4.1.38.config
+    ESCAPE_QUOTES
+    @ONLY
+)
 
 ExternalProject_Add(
-    BusyBox
-    URL http://busybox.net/downloads/busybox-1.24.2.tar.bz2
-    URL_HASH SHA1=03e6cfc8ddb2f709f308719a9b9f4818bc0a28d0
-    DOWNLOAD_DIR ${SOURCE_CACHE}
+    busybox
+    URL http://busybox.net/downloads/busybox-1.26.2.tar.bz2
+    URL_HASH SHA1=0b3e3cd49d6d9e30f66e364bf842663348b23dc9
+    EXCLUDE_FROM_ALL 1
     BUILD_IN_SOURCE 1
-    INSTALL_DIR ${PROJECT_BINARY_DIR}
-    CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/configs/busybox.config <BINARY_DIR>/.config
-    BUILD_COMMAND make CROSS_COMPILE=${CROSS_COMPILE} ARCH=${ARCH}
-    INSTALL_COMMAND make CROSS_COMPILE=${CROSS_COMPILE} ARCH=${ARCH} CONFIG_PREFIX=<INSTALL_DIR> install
+    INSTALL_DIR ${INITRAMFS}
+    CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/configs/busybox.config <BINARY_DIR>/.config
+    BUILD_COMMAND make ARCH=mips CROSS_COMPILE=${CROSS_COMPILE}
+    INSTALL_COMMAND make ARCH=mips CROSS_COMPILE=${CROSS_COMPILE} CONFIG_PREFIX=<INSTALL_DIR> install
 )
 
+add_custom_command(
+    OUTPUT ${INITRAMFS}/init
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/init ${INITRAMFS}/init
+    COMMAND chmod +x ${INITRAMFS}/init
+)
+
+add_custom_target(
+    init
+    DEPENDS busybox ${INITRAMFS}/init
+)
+
+# Create device nodes
+
+foreach (directory dev proc sys root)
+    add_custom_command(
+        OUTPUT ${INITRAMFS}/${directory}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${INITRAMFS}/${directory}
+    )
+
+    list (APPEND DIRS "${INITRAMFS}/${directory}")
+endforeach ()
+
+add_custom_target (
+    directories
+    DEPENDS ${DIRS}
+)
+
+file (READ ${CMAKE_CURRENT_SOURCE_DIR}/initramfs/node-list.txt contents)
+
+STRING(REGEX REPLACE ";" "\\\\;" contents "${contents}")
+STRING(REGEX REPLACE "\n" ";" contents "${contents}")
+
+foreach (nod IN LISTS contents)
+    string (REGEX MATCH "^([^ ]*)" devname ${nod})
+
+    string(REPLACE " " ";" nod ${nod})
+    add_custom_command(
+        OUTPUT ${INITRAMFS}/dev/${devname}
+        COMMAND fakeroot mknod ${nod}
+        WORKING_DIRECTORY ${INITRAMFS}/dev
+        DEPENDS ${INITRAMFS}/dev
+    )
+
+    list (APPEND DEVICE_NODES ${INITRAMFS}/dev/${devname})
+endforeach (nod in LISTS contents)
+
+add_custom_target(
+    device-nodes
+    DEPENDS ${DEVICE_NODES}
+)
+
+add_custom_command(
+    OUTPUT ${CONFIG_INITRAMFS_SOURCE}
+    COMMAND find . -print0 | cpio --null -ov --format=newc --owner=0:0 | gzip -9 > ${CONFIG_INITRAMFS_SOURCE}
+    WORKING_DIRECTORY ${INITRAMFS}
+    DEPENDS init busybox device-nodes directories
+)
+
+add_custom_target(
+    initramfs
+    DEPENDS ${CONFIG_INITRAMFS_SOURCE}
+)
+
+file (GLOB linux_patches ${CMAKE_CURRENT_SOURCE_DIR}/patches/linux-4.1.38/*.patch)
 
 ExternalProject_Add(
-    Linux
-    DEPENDS BusyBox
-    URL https://www.kernel.org/pub/linux/kernel/v4.x/linux-4.1.11.tar.xz
-    URL_HASH SHA1=28bd4fbdef18c35adeaa82179045154e33829a79
-    DOWNLOAD_DIR ${SOURCE_CACHE}
+    linux
+    URL https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.1.38.tar.xz
+    URL_HASH SHA1=58fa94854db192ac1558f96819efff0550f6c09d
     BUILD_IN_SOURCE 1
-    PATCH_COMMAND bash -c "cat ${PROJECT_SOURCE_DIR}/patches/linux/*.patch | patch -Np1"
-    CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/configs/linux.config <BINARY_DIR>/.config
-    BUILD_COMMAND make CROSS_COMPILE=${CROSS_COMPILE} ARCH=${ARCH}
-    INSTALL_COMMAND ${CMAKE_COMMAND} -E copy <BINARY_DIR>/arch/${ARCH}/boot/compressed/vmlinux.bin <INSTALL_DIR>/
+    DEPENDS initramfs
+    CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/linux-4.1.38.config <BINARY_DIR>/.config
+    PATCH_COMMAND cat ${linux_patches} | patch -Np1
+    BUILD_COMMAND make ARCH=mips CROSS_COMPILE=${CROSS_COMPILE}
+    INSTALL_COMMAND ${CMAKE_COMMAND} -E copy <BINARY_DIR>/arch/mips/boot/compressed/vmlinux.bin <INSTALL_DIR>
 )
-
-
-ExternalProject_Add_Step(
-    Linux
-    Create_initramfs
-    COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/initramfs.txt <BINARY_DIR>/initramfs.txt
-    COMMENT "Copy initramfs.txt"
-    DEPENDEES configure
-    DEPENDERS build
-)
-
-
-#ExternalProject_Add(
-#    sangam-atm
-#    URL https://downloads.openwrt.org/sources/sangam_atm-D7.05.01.00-R1.tar.bz2
-#)

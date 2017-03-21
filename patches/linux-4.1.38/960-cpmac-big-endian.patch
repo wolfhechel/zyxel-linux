@@ -1,0 +1,22 @@
+Index: linux-4.1.11/drivers/net/ethernet/ti/cpmac.c
+===================================================================
+--- linux-4.1.11.orig/drivers/net/ethernet/ti/cpmac.c
++++ linux-4.1.11/drivers/net/ethernet/ti/cpmac.c
+@@ -179,10 +179,17 @@ MODULE_PARM_DESC(dumb_switch, "Assume sw
+ struct cpmac_desc {
+ 	u32 hw_next;
+ 	u32 hw_data;
++#ifdef CONFIG_CPU_LITTLE_ENDIAN
+ 	u16 buflen;
+ 	u16 bufflags;
+ 	u16 datalen;
+ 	u16 dataflags;
++#else
++	u16 bufflags;
++	u16 buflen;
++	u16 dataflags;
++	u16 datalen;
++#endif
+ #define CPMAC_SOP			0x8000
+ #define CPMAC_EOP			0x4000
+ #define CPMAC_OWN			0x2000
